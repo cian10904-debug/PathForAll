@@ -25,7 +25,7 @@ The map, search, click selection, GPS validation, and route input use the five-b
 west -74.2591 · south 40.4774 · east -73.7004 · north 40.9176
 ```
 
-All coordinates use `[longitude, latitude]`. The visible place marker always remains at the actual searched, GPS, or tapped location. A local route may attach an endpoint only by splitting mapped pedestrian geometry within two meters of the selected point; otherwise it is rejected. No straight or hidden access leg is invented.
+All coordinates use `[longitude, latitude]`. The visible place marker always remains at the actual searched, GPS, or tapped location. A local route begins on mapped pedestrian geometry at the selected point or at a mapped OSM, transit, or building entrance near the selection. The selected location and routing access point are stored separately, and an estimated entrance connection is disclosed as unverified. If neither an exact attachment nor a mapped entrance can reach pedestrian geometry, routing fails closed. No straight or hidden access leg is invented.
 
 ## Data and service configuration
 
@@ -47,7 +47,7 @@ An accessible routing service receives `{ start, end, needs, mode, departureTime
 
 When no transit service or provider topology is configured, Bus, Subway, Ferry, and Mixed are disabled. They do not fall back to the Cooper Union teaching fixture or a fabricated transit line.
 
-The Transit Data panel validates these five settings, reports each service independently, and never treats a configured URL as proof of a live connection. With no transit backend, transit modes are disabled and the panel states that Walk remains available from OSM pedestrian data. **Check connections** checks only configured capability/health information; it does not download MTA data. Development builds expose sanitized diagnostics containing configuration booleans, accepted modes, status, source labels, and timestamps—never credentials or complete endpoint URLs.
+Profile → Data sources validates these five settings, reports each service independently, and never treats a configured URL as proof of a live connection. The main planner shows only a concise user-facing availability state. With no transit backend, transit modes are disabled and Walk remains available from OSM pedestrian data. **Check connections** checks only configured capability/health information; it does not download MTA data. Development builds expose sanitized diagnostics containing configuration booleans, accepted modes, status, source labels, and timestamps—never credentials or complete endpoint URLs.
 
 Configuration URLs must use HTTPS, except for localhost development. Embedded credentials, fragments, credential-like query parameters, unsupported routing modes, orphan capability endpoints, and orphan arrival endpoints are reported as configuration errors.
 
@@ -69,7 +69,7 @@ Configuration URLs must use HTTPS, except for localhost development. Embedded cr
 ## Run locally
 
 ```bash
-cd /Users/ic/Downloads/pathforall-capstone-v7-pilot
+cd PathForAll
 npm ci
 npm run dev
 ```
@@ -89,6 +89,28 @@ npm run preview
 ```
 
 `npm test` covers search/geography, route-trust boundaries, storage recovery, profiles, OSM corridor constraints, normalized provider routes, cards/layer data, time-dependent transit, arrival re-ranking, navigation safeguards, and stale request protection. Browser tests cover keyboard search, route-card semantics, dialog focus, background inertness, automated accessibility checks, responsive viewports, and 200% zoom. `npm run build` produces a production Vite bundle in `dist/`; `dist/` and `node_modules/` are intentionally excluded from source delivery.
+
+For a platform-clean verification, remove generated artifacts before installing:
+
+```bash
+rm -rf node_modules dist .vite
+npm install
+npm test
+npm run typecheck
+npm run lint
+npm run build
+```
+
+Create a source-only ZIP from committed files with Git rather than compressing the working directory:
+
+```bash
+git archive \
+  --format=zip \
+  --output=PathForAll-source.zip \
+  HEAD
+```
+
+The archive excludes `node_modules/`, `dist/`, `.vite/`, `.git/`, `.env`, `.DS_Store`, and `__MACOSX/`. The generated ZIP itself is ignored.
 
 ## Using the product
 

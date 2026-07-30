@@ -69,6 +69,14 @@ test("overlays isolate the map and responsive layouts do not overflow", async ({
 });
 
 test("unconfigured transit services are explicit and transit modes stay disabled", async ({ page }) => {
+  await expect(page.locator("#plannerTransitStatus")).toHaveText("Transit information unavailable");
+  await expect(page.locator("#navigatePage #transitConnectionList")).toHaveCount(0);
+  for (const mode of ["Bus", "Subway", "Ferry", "Mixed"]) {
+    await expect(page.getByRole("radio", { name: mode, exact: true })).toBeDisabled();
+  }
+  await expect(page.getByRole("radio", { name: "Walk", exact: true })).toBeEnabled();
+
+  await page.getByRole("button", { name: "Profile", exact: true }).click();
   await expect(page.locator("#transitDataSummary")).toHaveText("Transit services are not connected");
   await expect(page.locator("#transitDataDetail")).toContainText(
     "Walk remains available using OpenStreetMap pedestrian data"
@@ -81,17 +89,42 @@ test("unconfigured transit services are explicit and transit modes stay disabled
     "Not configured",
     "Not configured"
   ]);
-  for (const mode of ["Bus", "Subway", "Ferry", "Mixed"]) {
-    await expect(page.getByRole("radio", { name: mode, exact: true })).toBeDisabled();
-  }
-  await expect(page.getByRole("radio", { name: "Walk", exact: true })).toBeEnabled();
-
   const checkButton = page.getByRole("button", { name: "Check connections", exact: true });
   await checkButton.click();
   await expect(page.locator("#transitDataSummary")).toHaveText("Transit services are not connected");
   await expect(page.locator("#transitDiagnostics")).toBeVisible();
   await expect(page.locator("#transitDiagnosticsJson")).not.toContainText("http://");
   await expect(page.locator("#transitDiagnosticsJson")).not.toContainText("https://");
+});
+
+test("mobile map-pick mode exposes the map and restores the planner", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const planner = page.locator(".planner-sheet");
+  const bottomNav = page.locator(".bottom-nav");
+  await expect(planner).toBeVisible();
+
+  await page.getByRole("button", { name: "Choose starting point on map" }).click();
+  await expect(page.locator("body")).toHaveClass(/map-pick-active/);
+  await expect(page.locator("#mapPickBanner")).toBeVisible();
+  await expect(planner).toHaveCSS("opacity", "0");
+  expect(await planner.evaluate(element => element.inert)).toBe(true);
+  const plannerBox = await planner.boundingBox();
+  expect(plannerBox?.y, "the planner sheet moves below the viewport").toBeGreaterThanOrEqual(844);
+  await expect(bottomNav).toBeVisible();
+  await expect(bottomNav).toHaveCSS("position", "fixed");
+
+  await page.keyboard.press("Escape");
+  await expect(page.locator("body")).not.toHaveClass(/map-pick-active/);
+  await expect(page.locator("#mapPickBanner")).toBeHidden();
+  await expect(planner).toBeVisible();
+  expect(await planner.evaluate(element => element.inert)).toBe(false);
+  await expect(page.getByRole("button", { name: "Choose starting point on map" })).toBeFocused();
+
+  await page.getByRole("button", { name: "Choose destination on map" }).click();
+  await page.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(page.locator("body")).not.toHaveClass(/map-pick-active/);
+  await expect(planner).toBeVisible();
+  await expect(page.getByRole("button", { name: "Choose destination on map" })).toBeFocused();
 });
 
 async function installPublicServiceFixtures(page) {

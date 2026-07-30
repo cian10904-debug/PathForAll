@@ -50,11 +50,12 @@ export async function getTransitArrivals(route, now = new Date(), options = {}) 
   const fetchImpl = options.fetchImpl || globalThis.fetch;
   if (!groups.length) return unavailableArrivals([]);
   if (!url) return unavailableArrivals(groups);
-  const boardings = await Promise.all(groups.map(group => fetchBoarding(group, now, {
+  const fetchedBoardings = await Promise.all(groups.map(group => fetchBoarding(group, now, {
     ...options,
     url,
     fetchImpl
   })));
+  const boardings = alignBoardingPredictions(route, fetchedBoardings, now);
   const available = boardings.filter(boarding => boarding.status === "available" && boarding.selectedPrediction);
   const stale = boardings.some(boarding => boarding.status === "stale");
   const first = available[0] || null;
@@ -153,10 +154,11 @@ export function attachArrivalData(route, arrivals) {
       status: result?.status || "unavailable"
     });
   }
-  const totals = calculateRouteTotals(legs);
+  const retimedLegs = retimeLegs(legs, route, groups);
+  const totals = calculateRouteTotals(retimedLegs);
   return {
     ...route,
-    legs,
+    legs: retimedLegs,
     ...totals,
     boardings: normalizedBoardings,
     arrivals: arrivals || unavailableArrivals(groups)
@@ -252,6 +254,59 @@ function unavailableBoarding(group, status = "unavailable", data = {}, updatedAt
 
 function vehicleKey(leg) {
   return `${leg.mode}:${leg.routeId || leg.routeName || leg.operator || leg.id}:${leg.tripId || leg.directionId || leg.headsign || ""}`;
+}
+
+function alignBoardingPredictions(route, boardings, now) {
+  const current = now instanceof Date ? now : new Date(now);
+  if (!Number.isFinite(current.getTime())) return boardings;
+  const byLeg = new Map(boardings.map(boarding => [boarding.legIndex, boarding]));
+  let cursor = current.getTime();
+  for (const [legIndex, leg] of (route?.legs || []).entries()) {
+    const boarding = byLeg.get(legIndex);
+    let waitSeconds = Number(leg.waitSeconds || 0);
+    if (boarding?.status === "available") {
+      const predictions = boarding.predictions.map(prediction => {
+        if (!prediction.timestamp) return prediction;
+        const adjustedWait = (Date.parse(prediction.timestamp) - cursor) / 1000;
+        if (!Number.isFinite(adjustedWait) || adjustedWait < 0) return null;
+        return {
+          ...prediction,
+          waitSeconds: Math.round(adjustedWait),
+          minutes: Math.ceil(adjustedWait / 60)
+        };
+      }).filter(Boolean).sort((a, b) => a.waitSeconds - b.waitSeconds);
+      if (predictions.length) {
+        boarding.predictions = predictions;
+        boarding.selectedPrediction = predictions[0];
+        waitSeconds = predictions[0].waitSeconds;
+      } else {
+        boarding.status = "unavailable";
+        boarding.predictions = [];
+        boarding.selectedPrediction = null;
+      }
+    }
+    cursor += (Math.max(0, waitSeconds) + Math.max(0, Number(leg.durationSeconds || 0))) * 1000;
+  }
+  return boardings;
+}
+
+function retimeLegs(legs, route, groups) {
+  const firstOriginal = route?.legs?.[0];
+  const firstDeparture = Date.parse(firstOriginal?.departureTime);
+  if (!Number.isFinite(firstDeparture)) return legs;
+  let cursor = firstDeparture - Math.max(0, Number(firstOriginal?.waitSeconds || 0)) * 1000;
+  const boardingLegs = new Set(groups.map(group => group.legIndex));
+  return legs.map((leg, index) => {
+    const waitSeconds = boardingLegs.has(index) ? Math.max(0, Number(leg.waitSeconds || 0)) : 0;
+    const departureTime = cursor + waitSeconds * 1000;
+    const arrivalTime = departureTime + Math.max(0, Number(leg.durationSeconds || 0)) * 1000;
+    cursor = arrivalTime;
+    return {
+      ...leg,
+      departureTime: new Date(departureTime).toISOString(),
+      arrivalTime: new Date(arrivalTime).toISOString()
+    };
+  });
 }
 
 function validTimestamp(value) {

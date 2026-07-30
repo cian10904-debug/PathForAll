@@ -163,7 +163,7 @@ export function transitModeAvailability(
   const availability = { walk: true, bus: false, subway: false, ferry: false, mixed: false };
   if (environment.endpoints.routeProvider.valid) {
     const providerModes = routeCapabilities.available
-      ? routeCapabilities.modes || []
+      ? routeCapabilities.supportedModes || routeCapabilities.modes || []
       : environment.modes;
     providerModes.forEach(mode => {
       if (TRANSIT_MODES.includes(mode)) availability[mode] = true;

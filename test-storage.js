@@ -65,11 +65,40 @@ assert.deepEqual(quotaAdapter.readJson("profile", null), { name: "Ada" }, "quota
 
 clearSavedRoutes();
 saveRoute(
-  { id: "ferry-route", mode: "ferry", label: "Ferry", totalDurationSeconds: 1200, distanceMeters: 3000 },
+  {
+    id: "ferry-route",
+    mode: "ferry",
+    label: "Ferry",
+    totalDurationSeconds: 1200,
+    totalWalkingMeters: 0,
+    totalWaitSeconds: 300,
+    transfers: 0,
+    distanceMeters: 3000,
+    accessibility: { wheelchairAccessible: "unknown" },
+    trust: { confidence: .8 },
+    legs: [{
+      id: "ferry-leg",
+      mode: "ferry",
+      from: { id: "start", name: "The Battery", coordinates: [-74.0169, 40.7034] },
+      to: { id: "end", name: "Liberty Island", coordinates: [-74.0450, 40.6897] },
+      routeId: "battery-liberty",
+      routeName: "The Battery to Liberty Island",
+      headsign: "Liberty Island",
+      durationSeconds: 900,
+      distanceMeters: 3000,
+      waitSeconds: 300,
+      departureTime: "2099-01-01T12:30:00.000Z",
+      arrivalTime: "2099-01-01T12:45:00.000Z",
+      geometry: null,
+      accessibility: { wheelchairAccessible: "unknown" }
+    }]
+  },
   { id: "start", name: "The Battery", coordinates: [-74.0169, 40.7034] },
   { id: "end", name: "Liberty Island", coordinates: [-74.0450, 40.6897] }
 );
 assert.equal(loadSavedRoutes()[0].mode, "ferry", "Ferry mode survives save and reload");
+assert.equal(loadSavedRoutes()[0].legs[0].mode, "ferry", "saved routes retain normalized legs.");
+assert.equal(loadSavedRoutes()[0].totalWaitSeconds, 300);
 clearSavedRoutes();
 
 const [html, app] = await Promise.all([readFile("index.html", "utf8"), readFile("app.js", "utf8")]);

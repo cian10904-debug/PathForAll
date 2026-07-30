@@ -31,10 +31,10 @@ export function normalizeAccessiblePath(path = {}, equipmentByCode = new Map(), 
   const equipmentCodes = stringList(path.equipmentCodes || path.equipmentIds);
   const equipment = equipmentCodes.map(code => equipmentByCode.get(code)).filter(Boolean);
   const explicitStatus = normalizeStatus(path.status);
-  const status = explicitStatus !== "unknown"
-    ? explicitStatus
-    : equipment.some(item => item.status === "out")
-      ? "out"
+  const status = equipment.some(item => item.status === "out") || explicitStatus === "out"
+    ? "out"
+    : explicitStatus === "working"
+      ? "working"
       : equipment.length && equipment.every(item => item.status === "working")
         ? "working"
         : "unknown";
@@ -67,10 +67,16 @@ export function normalizeStationAccessibility(stop = {}, equipmentRecords = [], 
   const accessiblePaths = (Array.isArray(stop.accessiblePaths) ? stop.accessiblePaths : [])
     .map(path => normalizeAccessiblePath(path, equipmentByCode, options))
     .filter(path => path.id);
-  const usablePaths = accessiblePaths.filter(path => path.complete && path.wheelchairAccessible && path.status === "working" && path.freshness !== "stale");
+  const usablePaths = accessiblePaths.filter(path =>
+    path.complete
+    && path.wheelchairAccessible
+    && path.status === "working"
+    && path.freshness === "current"
+    && Number.isFinite(Date.parse(path.updatedAt))
+  );
   const status = usablePaths.length ? "working"
     : accessiblePaths.some(path => path.status === "out") ? "out"
-      : normalizeStatus(stop.elevatorStatus?.status || stop.elevatorStatus);
+      : "unknown";
   const updatedAt = newestTimestamp(accessiblePaths.map(path => path.updatedAt));
   return {
     ...stop,

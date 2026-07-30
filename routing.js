@@ -47,7 +47,7 @@ const PROFILE_WEIGHTS = {
     lighting: 1.4
   },
   lit: {
-    label: "Best-lit route",
+    label: "Better-lit route",
     time: 0.9,
     slope: 1.35,
     unknownSlope: 1.1,
@@ -335,19 +335,33 @@ function getReasonList(metrics, weather) {
   return reasons.slice(0, 3);
 }
 
-function planAllRoutes(nodes, edges, startId, endId, needs, weather) {
-  return Object.entries(PROFILE_WEIGHTS).map(([key, weights]) => {
-    const route = dijkstra(nodes, edges, startId, endId, needs, weather, weights);
-    if (!route) return { key, label: weights.label, route: null, metrics: null, reasons: [] };
-    const metrics = summarizeRoute(route, edges);
-    return {
-      key,
-      label: weights.label,
-      route,
-      metrics,
-      reasons: getReasonList(metrics, weather)
-    };
-  });
+function planAllRoutes(nodes, edges, startId, endId, needs, weather, context = {}) {
+  const lightingRequested = needs.preferWellLit === true || isNightTime(context.departureTime);
+  return Object.entries(PROFILE_WEIGHTS)
+    .filter(([key]) => key !== "lit" || lightingRequested)
+    .map(([key, weights]) => {
+      const route = dijkstra(nodes, edges, startId, endId, needs, weather, weights);
+      if (!route) return { key, label: weights.label, route: null, metrics: null, reasons: [] };
+      const metrics = summarizeRoute(route, edges);
+      const reasons = getReasonList(metrics, weather);
+      if (key === "lit" && metrics.unknownLightingCoverage > 0) {
+        reasons.push("Lighting data unavailable for some segments");
+      }
+      return {
+        key,
+        label: weights.label,
+        route,
+        metrics,
+        reasons: reasons.slice(0, 4)
+      };
+    });
+}
+
+function isNightTime(value = new Date()) {
+  const date = value instanceof Date ? value : new Date(value);
+  if (!Number.isFinite(date.getTime())) return false;
+  const hour = date.getHours();
+  return hour < 6 || hour >= 19;
 }
 
 function clamp(value, min, max) {
@@ -361,5 +375,6 @@ export {
   edgeCost,
   dijkstra,
   summarizeRoute,
-  planAllRoutes
+  planAllRoutes,
+  isNightTime
 };

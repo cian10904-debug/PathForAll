@@ -60,7 +60,7 @@ export function routeCardMarkup(route, index, escape = value => String(value ?? 
   const selectedClass = selected ? " selected" : "";
   const selectButton = (label, icon, duration) => `<button class="route-select-button" type="button" role="radio" aria-checked="${selected}" data-route-index="${index}" aria-label="Select ${escape(label)}, ${escape(duration)}"><span><span class="route-label">${escape(label)}</span><span class="route-time">${escape(duration)}</span></span><span aria-hidden="true">${icon}</span></button>`;
   if (view.type === "walk") {
-    return `<article class="route-card${selectedClass}">${selectButton(route.label, view.icon, view.durationLabel)}<p class="route-summary">${escape(route.warnings?.join("; ") || "Personalized accessible walking route.")}</p><div class="route-metrics"><div class="route-metric"><span>Distance</span><strong>${Math.round(route.distanceMeters || 0)} m</strong></div><div class="route-metric"><span>Data coverage</span><strong>${escape(view.dataCoverage)}</strong></div><div class="route-metric"><span>Lighting</span><strong>${escape(view.lighting)}</strong></div><div class="route-metric"><span>Surface & slope</span><strong>${escape(view.surfaceSlope)}</strong></div></div></article>`;
+    return `<article class="route-card${selectedClass}">${selectButton(route.label, view.icon, view.durationLabel)}<p class="route-summary">${escape(route.warnings?.join("; ") || "Personalized accessible walking route.")}</p><div class="route-metrics"><div class="route-metric"><span>Distance</span><strong>${Math.round(route.distanceMeters || 0)} m</strong></div><div class="route-metric"><span>Data coverage</span><strong>${escape(view.dataCoverage)}</strong></div><div class="route-metric"><span>Estimated lighting coverage</span><strong>${escape(view.lighting)}</strong></div><div class="route-metric"><span>Surface & slope</span><strong>${escape(view.surfaceSlope)}</strong></div></div></article>`;
   }
   const transitItems = view.transitSummary.map(item => `<li>${escape(item)}</li>`).join("");
   const boardingItems = view.boardingArrivals.map(item => `<li><strong>${escape(item.label)}</strong> · ${escape(item.text)}</li>`).join("");
@@ -68,7 +68,7 @@ export function routeCardMarkup(route, index, escape = value => String(value ?? 
     ? `<p class="ferry-detail"><strong>${escape(view.operator)}</strong>${view.ticketRequired ? " · Ticket required" : ""}${view.securityScreeningRequired ? " · Security screening required" : ""}${view.ferryScheduleUnavailable ? " · Check current schedule and ticket availability" : ""}</p>`
     : "";
   const warning = view.hasTransitGeometryGap ? "Detailed transit map geometry is unavailable for part of this route." : "";
-  return `<article class="route-card${selectedClass}">${selectButton(route.label, view.icon, view.durationLabel)}<p class="route-summary">${view.boardingName ? `Board at ${escape(view.boardingName)}${view.exitName ? ` and exit at ${escape(view.exitName)}.` : "."}` : "Transit stop details are unavailable."}</p><p class="transit-arrival-line"><strong>${escape(view.transitSummary[0] || "Transit")}</strong> · ${escape(view.arrivalText)}</p>${ferryDetails}<div class="route-metrics"><div class="route-metric"><span>Distance</span><strong>${Math.round(route.distanceMeters || 0)} m</strong></div><div class="route-metric"><span>Data coverage</span><strong>${escape(view.dataCoverage)}</strong></div><div class="route-metric"><span>Lighting</span><strong>${escape(view.lighting)}</strong></div><div class="route-metric"><span>Surface & slope</span><strong>${escape(view.surfaceSlope)}</strong></div><div class="route-metric"><span>Elevator / transit</span><strong>${escape(view.elevatorStatus)}</strong></div></div>${warning ? `<p class="trust-line">${escape(warning)}</p>` : ""}<ol class="segment-list">${transitItems}${boardingItems}</ol></article>`;
+  return `<article class="route-card${selectedClass}">${selectButton(route.label, view.icon, view.durationLabel)}<p class="route-summary">${view.boardingName ? `Board at ${escape(view.boardingName)}${view.exitName ? ` and exit at ${escape(view.exitName)}.` : "."}` : "Transit stop details are unavailable."}</p><p class="transit-arrival-line"><strong>${escape(view.transitSummary[0] || "Transit")}</strong> · ${escape(view.arrivalText)}</p>${ferryDetails}<div class="route-metrics"><div class="route-metric"><span>Distance</span><strong>${Math.round(route.distanceMeters || 0)} m</strong></div><div class="route-metric"><span>Data coverage</span><strong>${escape(view.dataCoverage)}</strong></div><div class="route-metric"><span>Estimated lighting coverage</span><strong>${escape(view.lighting)}</strong></div><div class="route-metric"><span>Surface & slope</span><strong>${escape(view.surfaceSlope)}</strong></div><div class="route-metric"><span>Elevator / transit</span><strong>${escape(view.elevatorStatus)}</strong></div></div>${warning ? `<p class="trust-line">${escape(warning)}</p>` : ""}<ol class="segment-list">${transitItems}${boardingItems}</ol></article>`;
 }
 
 function dataCoverageLabel(route) {
@@ -82,8 +82,10 @@ function dataCoverageLabel(route) {
 }
 
 function lightingLabel(metrics = {}) {
-  if (!Number.isFinite(metrics.litCoverage)) return "Unknown";
-  return metrics.litCoverage >= .7 ? "Higher coverage" : metrics.litCoverage > 0 ? "Partial coverage" : "Data missing";
+  if (!Number.isFinite(metrics.litCoverage)) return "Lighting data unavailable";
+  const percent = Math.round(metrics.litCoverage * 100);
+  if (Number(metrics.unknownLightingCoverage || 0) > 0) return `${percent}% · some segments unavailable`;
+  return `${percent}% mapped as lit`;
 }
 
 function surfaceSlopeLabel(metrics = {}) {

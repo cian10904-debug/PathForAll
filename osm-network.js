@@ -67,7 +67,10 @@ export async function loadLiveOsmGraph(bounds, options = {}) {
 export function buildOverpassQuery(bounds) {
   if (bounds?.type === "corridor") {
     const radius = Math.max(250, Math.min(2200, Number(bounds.radiusMeters || 1000)));
-    const areas = (bounds.points || []).map(([lon, lat]) => `  way(around:${Math.round(radius)},${lat},${lon})["highway"~"^(footway|path|pedestrian|steps|corridor|elevator|living_street|residential|service|unclassified|tertiary|secondary|primary)$"]["area"!="yes"]["access"!~"^(private|no)$"]["foot"!~"^(private|no)$"];`).join("\n");
+    const areas = (bounds.points || []).map(([lon, lat]) => `  way(around:${Math.round(radius)},${lat},${lon})["highway"~"^(footway|path|pedestrian|steps|corridor|elevator|living_street|residential|service|unclassified|tertiary|secondary|primary)$"]["area"!="yes"]["access"!~"^(private|no)$"]["foot"!~"^(private|no)$"];
+  node(around:${Math.round(radius)},${lat},${lon})["entrance"]["access"!~"^(private|no)$"];
+  node(around:${Math.round(radius)},${lat},${lon})["railway"="subway_entrance"];
+  node(around:${Math.round(radius)},${lat},${lon})["public_transport"="entrance"];`).join("\n");
     if (!areas) throw new TypeError("A route corridor needs at least one coordinate.");
     return `[out:json][timeout:25];
 (
@@ -215,9 +218,21 @@ export function parseOverpassGraph(payload, options = {}) {
   }
 
   const connected = options.preserveComponents === true ? { nodes, edges } : keepLargestConnectedComponent(nodes, edges);
+  const accessPoints = [...osmNodes.values()]
+    .filter(node => isAccessPoint(node.tags))
+    .map(node => ({
+      id: node.id,
+      osmId: node.osmId,
+      name: node.name,
+      coordinates: [...node.coordinates],
+      connectorSource: accessPointSource(node.tags),
+      connectorStatus: "verified",
+      priority: accessPointPriority(node.tags)
+    }));
   return {
     nodes: connected.nodes,
     edges: connected.edges,
+    accessPoints,
     metadata: {
       rawNodeCount: osmNodes.size,
       rawWayCount: ways.length,
@@ -318,6 +333,33 @@ function parseLit(value) {
   return null;
 }
 
+function isAccessPoint(tags = {}) {
+  return Boolean(
+    tags.entrance
+    || tags.railway === "subway_entrance"
+    || tags.public_transport === "entrance"
+  );
+}
+
+function accessPointSource(tags = {}) {
+  if (tags.railway === "subway_entrance" || tags.public_transport === "entrance") {
+    return "OpenStreetMap transit entrance";
+  }
+  if (tags.entrance) return "OpenStreetMap entrance";
+  return "OpenStreetMap pedestrian access point";
+}
+
+function accessPointPriority(tags = {}) {
+  const accessibleBonus = tags.wheelchair === "yes" ? 2 : 0;
+  if (tags.entrance && tags.railway !== "subway_entrance" && tags.public_transport !== "entrance") {
+    return 50 + accessibleBonus;
+  }
+  if (tags.railway === "subway_entrance" || tags.public_transport === "entrance") {
+    return 40 + accessibleBonus;
+  }
+  return 10 + accessibleBonus;
+}
+
 function calculateConfidence({ tags, slope, surface, crossing, kerbState, shade }) {
   let score = 0.42;
   if (tags.name) score += 0.04;
@@ -390,7 +432,7 @@ export function findNearestNode(nodes, coordinates, maxDistanceMeters = Infinity
  * precision differences; anything farther away fails closed.
  */
 export function connectRouteEndpoints(nodes, edges, startPlace, endPlace, options = {}) {
-  const maxProjectionDistanceMeters = Math.max(0.25, Number(options.maxProjectionDistanceMeters || 2));
+  const maxProjectionDistanceMeters = Math.max(0.25, Number(options.maxProjectionDistanceMeters || 3));
   let graph = { nodes: { ...(nodes || {}) }, edges: [...(edges || [])] };
   const start = attachEndpoint(graph, startPlace, "start", { ...options, maxProjectionDistanceMeters });
   if (!start.connected) return { ...graph, startId: null, endId: null, failure: start };
@@ -403,6 +445,10 @@ export function connectRouteEndpoints(nodes, edges, startPlace, endPlace, option
     startId: start.nodeId,
     endId: end.nodeId,
     connectors: [start.connector, end.connector].filter(Boolean),
+    endpointConnections: {
+      start: start.connector,
+      end: end.connector
+    },
     failure: null
   };
 }
@@ -416,24 +462,24 @@ function attachEndpoint(graph, place, endpointType, options) {
       ...graph,
       connected: true,
       nodeId: exactNode.id,
-      connector: { endpointType, edgeId: null, distanceMeters: 0, evidence: "exact OSM node" }
+      connector: endpointConnection(place, exactNode.coordinates, {
+        endpointType,
+        edgeId: null,
+        connectorDistanceMeters: 0,
+        connectorSource: "Exact OpenStreetMap pedestrian node",
+        connectorStatus: "verified"
+      })
     };
   }
 
-  let best = null;
-  for (const edge of graph.edges) {
-    if (!edgeEligibleForEndpoint(edge, options)) continue;
-    const geometry = Array.isArray(edge.geometry) ? edge.geometry : [];
-    for (let index = 1; index < geometry.length; index += 1) {
-      const projection = projectToSegment(coordinates, geometry[index - 1], geometry[index]);
-      const distanceMeters = haversineMeters(coordinates, projection.coordinate);
-      if (!best || distanceMeters < best.distanceMeters) {
-        best = { edge, geometry, segmentIndex: index - 1, ...projection, distanceMeters };
-      }
-    }
+  let best = bestPedestrianProjection(graph.edges, coordinates, options);
+  let accessPoint = null;
+  if (!best || best.distanceMeters > options.maxProjectionDistanceMeters) {
+    accessPoint = bestEndpointAccessPoint(place, options.accessPoints, graph, options);
+    if (accessPoint) best = accessPoint.projection;
   }
 
-  if (!best || best.distanceMeters > options.maxProjectionDistanceMeters) {
+  if (!best || (!accessPoint && best.distanceMeters > options.maxProjectionDistanceMeters)) {
     return {
       ...graph,
       connected: false,
@@ -444,8 +490,9 @@ function attachEndpoint(graph, place, endpointType, options) {
     };
   }
 
-  const nodeId = `selected-${endpointType}-${coordinateKey(coordinates)}`;
-  const splitPoint = [...coordinates];
+  const accessCoordinates = accessPoint?.coordinates || best.coordinate;
+  const nodeId = `selected-${endpointType}-${coordinateKey(accessCoordinates)}`;
+  const splitPoint = [...best.coordinate];
   const fromGeometry = [
     ...best.geometry.slice(0, best.segmentIndex + 1),
     splitPoint
@@ -490,25 +537,106 @@ function attachEndpoint(graph, place, endpointType, options) {
         id: nodeId,
         name: place.name || `${endpointType} point`,
         coordinates: splitPoint,
-        selectedPlaceId: place.id || null
+        selectedPlaceId: place.id || null,
+        selectedCoordinates: [...coordinates]
       }
     },
     edges,
     connected: true,
     nodeId,
-    connector: {
+    connector: endpointConnection(place, splitPoint, {
       endpointType,
       edgeId: best.edge.id,
-      distanceMeters: fromDistance + toDistance,
-      selectionOffsetMeters: best.distanceMeters,
-      evidence: "OpenStreetMap pedestrian edge"
+      connectorGeometry: accessPoint?.connectorGeometry || null,
+      connectorDistanceMeters: accessPoint
+        ? haversineMeters(coordinates, accessCoordinates)
+        : haversineMeters(coordinates, splitPoint),
+      connectorSource: accessPoint?.connectorSource || "OpenStreetMap pedestrian edge",
+      connectorStatus: accessPoint?.connectorStatus || (best.distanceMeters <= .75 ? "verified" : "estimated"),
+      selectionOffsetMeters: haversineMeters(coordinates, splitPoint)
+    })
+  };
+}
+
+function bestPedestrianProjection(edges, coordinates, options) {
+  let best = null;
+  for (const edge of edges) {
+    if (!edgeEligibleForEndpoint(edge, options)) continue;
+    const geometry = Array.isArray(edge.geometry) ? edge.geometry : [];
+    for (let index = 1; index < geometry.length; index += 1) {
+      const projection = projectToSegment(coordinates, geometry[index - 1], geometry[index]);
+      const distanceMeters = haversineMeters(coordinates, projection.coordinate);
+      if (!best || distanceMeters < best.distanceMeters) {
+        best = { edge, geometry, segmentIndex: index - 1, ...projection, distanceMeters };
+      }
     }
+  }
+  return best;
+}
+
+function bestEndpointAccessPoint(place, values, graph, options) {
+  const maximum = Math.max(5, Number(options.maxAccessPointDistanceMeters || 160));
+  const candidates = [
+    ...(Array.isArray(place?.accessPoints) ? place.accessPoints : []),
+    ...(Array.isArray(values) ? values : [])
+  ].map(normalizeEndpointAccessPoint).filter(Boolean)
+    .filter(item => haversineMeters(place.coordinates, item.coordinates) <= maximum)
+    .map(item => ({
+      ...item,
+      projection: bestPedestrianProjection(graph.edges, item.coordinates, {
+        ...options,
+        maxProjectionDistanceMeters: Math.min(3, options.maxProjectionDistanceMeters)
+      })
+    }))
+    .filter(item => item.projection && item.projection.distanceMeters <= Math.min(3, options.maxProjectionDistanceMeters))
+    .sort((a, b) => b.priority - a.priority
+      || haversineMeters(place.coordinates, a.coordinates) - haversineMeters(place.coordinates, b.coordinates));
+  return candidates[0] || null;
+}
+
+function normalizeEndpointAccessPoint(value) {
+  if (!validCoordinate(value?.coordinates)) return null;
+  const source = String(value.connectorSource || value.source || "Mapped pedestrian access point");
+  const priority = Number(value.priority || (
+    /openstreetmap transit entrance/i.test(source) ? 40
+      : /openstreetmap.*entrance/i.test(source) ? 50
+        : /transit entrance/i.test(source) ? 40
+          : /building entrance/i.test(source) ? 30
+            : /footway/i.test(source) ? 20
+              : /sidewalk/i.test(source) ? 10 : 1
+  ));
+  const connectorGeometry = validLineGeometry(value.connectorGeometry) ? {
+    type: "LineString",
+    coordinates: value.connectorGeometry.type === "LineString"
+      ? value.connectorGeometry.coordinates.map(point => [...point])
+      : value.connectorGeometry.map(point => [...point])
+  } : null;
+  return {
+    coordinates: [...value.coordinates],
+    connectorGeometry,
+    connectorSource: source,
+    connectorStatus: value.connectorStatus === "verified" && connectorGeometry ? "verified" : "estimated",
+    priority
+  };
+}
+
+function endpointConnection(place, accessPointCoordinates, details) {
+  return {
+    endpointType: details.endpointType,
+    edgeId: details.edgeId || null,
+    selectedCoordinates: [...place.coordinates],
+    accessPointCoordinates: [...accessPointCoordinates],
+    connectorGeometry: details.connectorGeometry || null,
+    connectorDistanceMeters: Number(details.connectorDistanceMeters || 0),
+    connectorSource: details.connectorSource,
+    connectorStatus: details.connectorStatus,
+    selectionOffsetMeters: Number(details.selectionOffsetMeters || 0)
   };
 }
 
 function edgeEligibleForEndpoint(edge, options = {}) {
   if (!edge || edge.blocked || !Array.isArray(edge.geometry) || edge.geometry.length < 2) return false;
-  if (!["dedicated", "shared-space", "explicit-foot"].includes(edge.pedestrianEvidence)) return false;
+  if (!["dedicated", "shared-space", "explicit-foot", "sidewalk-tag"].includes(edge.pedestrianEvidence)) return false;
   if (options.avoidStairs && edge.stairs) return false;
   if (options.wheelchairMode && edge.roadCenterline) return false;
   return true;
@@ -546,6 +674,13 @@ function validCoordinate(value) {
   return Array.isArray(value) && value.length >= 2
     && Number.isFinite(value[0]) && Number.isFinite(value[1])
     && Math.abs(value[0]) <= 180 && Math.abs(value[1]) <= 90;
+}
+
+function validLineGeometry(value) {
+  const coordinates = value?.type === "LineString" ? value.coordinates : value;
+  return Array.isArray(coordinates)
+    && coordinates.length >= 2
+    && coordinates.every(validCoordinate);
 }
 
 export function networkToGeoJSON(edges) {
