@@ -1,0 +1,39 @@
+{
+  "name": "pathforall-capstone-v7-pilot",
+  "version": "7.1.0",
+  "private": true,
+  "type": "module",
+  "description": "NYC-wide accessibility-first walking, transit, and ferry route planner",
+  "engines": {
+    "node": ">=22.16"
+  },
+  "scripts": {
+    "dev": "vite --host 0.0.0.0",
+    "build": "vite build",
+    "preview": "npm run build && vite preview --host 0.0.0.0",
+    "test": "npm run test:unit",
+    "test:unit": "node test-route-model.js && node test-provider-capabilities.js && node test-transit-connections.js && node test-route-presentation.js && node test-route-session.js && node test-transit-arrivals.js && node test-transit-production.js && node test-ferry.js && node test-transit-ui.js && node test-routing.js && node test-navigation.js && node test-trust.js && node test-storage.js && node test-route-safety.js && node test-nyc-expansion.js && node test-search.js && node test-production-imports.js",
+    "test:e2e": "playwright test",
+    "lint:js": "eslint .",
+    "lint:css": "stylelint styles.css",
+    "lint:html": "html-validate index.html",
+    "format:check": "prettier --check package.json vite.config.js eslint.config.js playwright.config.js jsconfig.json storage-adapter.js fetch-client.js app-version.js",
+    "typecheck": "tsc -p jsconfig.json",
+    "lint": "npm run lint:js && npm run lint:css && npm run lint:html && npm run format:check"
+  },
+  "dependencies": {
+    "maplibre-gl": "5.24.0"
+  },
+  "devDependencies": {
+    "@axe-core/playwright": "4.12.1",
+    "@eslint/js": "10.0.1",
+    "@playwright/test": "1.62.0",
+    "eslint": "10.8.0",
+    "globals": "16.5.0",
+    "html-validate": "10.10.0",
+    "prettier": "3.9.6",
+    "stylelint": "16.26.1",
+    "typescript": "5.9.3",
+    "vite": "8.2.0"
+  }
+}
