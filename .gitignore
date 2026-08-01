@@ -1,8 +1,15 @@
 node_modules/
 dist/
 .vite/
-.DS_Store
-__MACOSX/
+
+# Environment variables and private keys
 .env
 .env.*
 !.env.example
+
+# OpenTripPlanner data
+otp-data/
+
+# macOS files
+.DS_Store
+__MACOSX/
