@@ -558,7 +558,7 @@ async function loadStreetNetwork(corridor, options = {}) {
       state.startPlace,
       state.endPlace,
       {
-        maxProjectionDistanceMeters: 2,
+        maxProjectionDistanceMeters: 40,
         wheelchairMode: getEffectiveNeeds().wheelchairMode,
         avoidStairs: getEffectiveNeeds().avoidStairs
       }
@@ -602,7 +602,7 @@ function snapEndpoint(type, forcedId = null, options = {}) {
   if (!state.networkReady) return;
   const place = type === "start" ? state.startPlace : state.endPlace;
   if (!place) return;
-  const nearest = forcedId ? { node: state.nodes[forcedId], distanceMeters: 0 } : findNearestNode(state.nodes, place.coordinates, 2);
+  const nearest = forcedId ? { node: state.nodes[forcedId], distanceMeters: 0 } : findNearestNode(state.nodes, place.coordinates, 40);
   if (!nearest?.node) {
     if (!options.silent) setPlannerMessage(`Could not connect ${type} to the pedestrian graph.`, "warning");
     if (type === "start") state.startId = null;
@@ -1987,7 +1987,7 @@ function saveDefaultNeeds(event) {
           : false,
       avoidStairs: els.avoidStairs.checked,
       requireCurb: els.requireCurb.checked,
-      curbPolicy: els.requireCurb.checked ? "required" : mobilityProfile === "custom" ? "allowUnknown" : "preferred",
+      curbPolicy: els.requireCurb.checked ? "preffered" : mobilityProfile === "custom" ? "allowUnknown" : "preferred",
       preferSmooth: els.preferSmooth.checked,
       requireElevator: els.requireElevator.checked,
       preferShade: els.preferShade.checked,

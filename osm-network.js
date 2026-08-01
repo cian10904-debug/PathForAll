@@ -444,8 +444,8 @@ function attachEndpoint(graph, place, endpointType, options) {
     };
   }
 
-  const nodeId = `selected-${endpointType}-${coordinateKey(coordinates)}`;
-  const splitPoint = [...coordinates];
+  const splitPoint = [...best.coordinate];
+  const nodeId =`selected-${endpointType}-${coordinateKey(splitPoint)}`;
   const fromGeometry = [
     ...best.geometry.slice(0, best.segmentIndex + 1),
     splitPoint
@@ -499,7 +499,7 @@ function attachEndpoint(graph, place, endpointType, options) {
     connector: {
       endpointType,
       edgeId: best.edge.id,
-      distanceMeters: fromDistance + toDistance,
+      distanceMeters: best.distanceMeters,
       selectionOffsetMeters: best.distanceMeters,
       evidence: "OpenStreetMap pedestrian edge"
     }
