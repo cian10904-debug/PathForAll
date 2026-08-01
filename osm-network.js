@@ -491,10 +491,8 @@ function attachEndpoint(graph, place, endpointType, options) {
   }
 
   const splitPoint = [...best.coordinate];
-  const nodeId =`selected-${endpointType}-${coordinateKey(splitPoint)}`;
   const accessCoordinates = accessPoint?.coordinates || best.coordinate;
-  const nodeId = `selected-${endpointType}-${coordinateKey(accessCoordinates)}`;
-  const splitPoint = [...best.coordinate];
+  const nodeId =`selected-${endpointType}-${coordinateKey(splitPoint)}`;
   const fromGeometry = [
     ...best.geometry.slice(0, best.segmentIndex + 1),
     splitPoint
@@ -547,19 +545,44 @@ function attachEndpoint(graph, place, endpointType, options) {
     connected: true,
     nodeId,
     connector: endpointConnection(place, splitPoint, {
-      endpointType,
-      edgeId: best.edge.id,
-      distanceMeters: best.distanceMeters,
-      selectionOffsetMeters: best.distanceMeters,
-      evidence: "OpenStreetMap pedestrian edge"
-      connectorGeometry: accessPoint?.connectorGeometry || null,
-      connectorDistanceMeters: accessPoint
-        ? haversineMeters(coordinates, accessCoordinates)
-        : haversineMeters(coordinates, splitPoint),
-      connectorSource: accessPoint?.connectorSource || "OpenStreetMap pedestrian edge",
-      connectorStatus: accessPoint?.connectorStatus || (best.distanceMeters <= .75 ? "verified" : "estimated"),
-      selectionOffsetMeters: haversineMeters(coordinates, splitPoint)
-    })
+  endpointType,
+  edgeId: best.edge.id,
+
+  connectorGeometry:
+    accessPoint?.connectorGeometry || null,
+
+  connectorDistanceMeters: accessPoint
+    ? haversineMeters(
+        coordinates,
+        accessCoordinates
+      ) +
+      haversineMeters(
+        accessCoordinates,
+        splitPoint
+      )
+    : haversineMeters(
+        coordinates,
+        splitPoint
+      ),
+
+  connectorSource:
+    accessPoint?.connectorSource ||
+    "OpenStreetMap pedestrian edge",
+
+  connectorStatus:
+    accessPoint?.connectorStatus ||
+    (
+      best.distanceMeters <= 0.75
+        ? "verified"
+        : "estimated"
+    ),
+
+  selectionOffsetMeters:
+    haversineMeters(
+      coordinates,
+      splitPoint
+    )
+})
   };
 }
 
