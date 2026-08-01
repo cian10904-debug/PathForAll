@@ -19,6 +19,11 @@ assert.match(html, />Ferry</);
 assert.match(app, /selected-ferry/);
 assert.match(app, /\["selected-walk", "selected-bus", "selected-subway", "selected-ferry"\]/, "all map layers are cleared together");
 assert.equal((app.match(/new maplibregl\.Map/g) || []).length, 1, "the application initializes one map");
+assert.match(app, /document\.body\.classList\.add\("map-pick-active"\)/);
+assert.match(app, /document\.body\.classList\.remove\("map-pick-active"\)/);
+assert.match(app, /beginMapPointSelection[\s\S]*?requestMapResize\(\)/, "map-pick entry schedules a resize on the existing map");
+assert.match(app, /cancelMapPointSelection[\s\S]*?requestMapResize\(\)/, "map-pick exit schedules a resize on the existing map");
+assert.match(css, /body\.map-pick-active \.planner-sheet\s*\{[^}]*transform:\s*translateY\(calc\(100vh \+ 120%\)\)/s);
 assert.doesNotMatch(html, /Checking elevator information/, "provider status does not claim an elevator check that is not occurring");
 assert.match(css, /\.bottom-nav\s*\{[^}]*position:\s*fixed/s, "primary navigation remains fixed at the bottom");
 
@@ -28,6 +33,12 @@ assert.match(html, /id="transitConnectionBadge"[^>]*>Not configured</, "the conn
 assert.match(html, /id="checkTransitConnectionsButton"[^>]*aria-controls="transitConnectionList"[^>]*>Check connections</, "the connection check is accurately labelled");
 assert.match(html, /id="transitConnectionList"[^>]*class="transit-connection-list"/, "the service statuses are exposed as one semantic list");
 assert.match(html, /id="transitModeAvailability"/, "configuration-required mode guidance is present");
+assert.match(html, /id="plannerTransitStatus"[^>]*>Transit information unavailable</);
+assert.doesNotMatch(
+  html.slice(html.indexOf('<main id="mainContent"'), html.indexOf('<section id="profilePage"')),
+  /data-transit-connection=/,
+  "detailed provider diagnostics are not rendered in the main planner."
+);
 
 const connectionRows = [
   ["route-provider", "Route provider"],

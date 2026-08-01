@@ -50,14 +50,14 @@ const available = await getTransitArrivals(route, NOW, {
         sourceLabel: "Provider",
         updatedAt: "2026-07-29T11:59:30.000Z",
         maxAgeSeconds: 180,
-        predictions: [{ timestamp: isBus ? "2026-07-29T12:05:00.000Z" : "2026-07-29T12:09:00.000Z" }]
+        predictions: [{ timestamp: isBus ? "2026-07-29T12:05:00.000Z" : "2026-07-29T12:23:30.000Z" }]
       })
     };
   }
 });
 assert.equal(available.status, "available");
 assert.equal(available.boardings.length, 2);
-assert.equal(available.boardings[0].selectedPrediction.waitSeconds, 300);
+assert.equal(available.boardings[0].selectedPrediction.waitSeconds, 180);
 assert.equal(available.boardings[1].selectedPrediction.waitSeconds, 540);
 assert.equal(requestUrls.length, 2, "every boarding receives its own provider lookup");
 assert.match(requestUrls[0], /stopId=bus-stop/);
@@ -66,13 +66,13 @@ assert.match(requestUrls[0], /tripId=bus-trip/);
 
 const attached = attachArrivalData(route, available);
 assert.equal(route.legs[1].waitSeconds, 0, "attaching arrivals does not mutate the original route");
-assert.equal(attached.legs[1].waitSeconds, 300);
+assert.equal(attached.legs[1].waitSeconds, 180);
 assert.equal(attached.legs[3].waitSeconds, 540);
-assert.equal(attached.totalWaitSeconds, 840, "both boarding waits are counted");
-assert.equal(attached.totalDurationSeconds, 2130, "access, rides, transfer, and both waits remain in seconds");
+assert.equal(attached.totalWaitSeconds, 720, "both boarding waits are counted from the time the rider reaches each stop");
+assert.equal(attached.totalDurationSeconds, 2010, "access, rides, transfer, and both waits remain in seconds");
 const attachedAgain = attachArrivalData(attached, available);
-assert.equal(attachedAgain.totalWaitSeconds, 840, "refreshing arrivals does not double-count waits");
-assert.equal(attachedAgain.totalDurationSeconds, 2130);
+assert.equal(attachedAgain.totalWaitSeconds, 720, "refreshing arrivals does not double-count waits");
+assert.equal(attachedAgain.totalDurationSeconds, 2010);
 
 assert.deepEqual(
   normalizePredictions([{ timestamp: "2026-07-29T11:59:00.000Z" }], NOW),

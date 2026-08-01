@@ -129,10 +129,12 @@ export const TRANSIT_STOPS = [
 for (const stop of TRANSIT_STOPS) {
   if (!stop.modes.includes("subway") || stop.wheelchairAccessible === false) continue;
   stop.platformStopId = `mta:subway:platform:${stop.id}`;
+  stop.entranceId = `mta:subway:entrance:${stop.id}`;
+  stop.boardingLocationType = "street_entrance";
   stop.directionId = "south";
   stop.accessiblePaths = [{
     id: `mta:subway:path:${stop.id}`,
-    entranceId: `mta:subway:entrance:${stop.id}`,
+    entranceId: stop.entranceId,
     fareControlAreaId: `mta:subway:station:${stop.id}`,
     platformStopIds: [stop.platformStopId],
     directionIds: ["south"],

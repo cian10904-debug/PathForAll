@@ -3,7 +3,7 @@
 import { appStorage } from "./storage-adapter.js";
 
 const PROFILE_KEY = "pathforall-profile-v7";
-const PROFILE_SCHEMA_VERSION = 2;
+const PROFILE_SCHEMA_VERSION = 3;
 
 export const MOBILITY_PRESETS = Object.freeze({
   wheelchair: Object.freeze({
@@ -11,9 +11,11 @@ export const MOBILITY_PRESETS = Object.freeze({
     avoidStairs: true,
     requireCurb: true,
     curbPolicy: "required",
+    requireVerifiedCurbAccess: false,
     preferSmooth: true,
     requireElevator: true,
     preferShade: false,
+    preferWellLit: false,
     avoidRain: false,
     minimizeTransfers: true,
     maxSlope: 6,
@@ -24,9 +26,11 @@ export const MOBILITY_PRESETS = Object.freeze({
     avoidStairs: true,
     requireCurb: false,
     curbPolicy: "preferred",
+    requireVerifiedCurbAccess: false,
     preferSmooth: true,
     requireElevator: true,
     preferShade: false,
+    preferWellLit: false,
     avoidRain: false,
     minimizeTransfers: true,
     maxSlope: 8,
@@ -37,9 +41,11 @@ export const MOBILITY_PRESETS = Object.freeze({
     avoidStairs: true,
     requireCurb: false,
     curbPolicy: "preferred",
+    requireVerifiedCurbAccess: false,
     preferSmooth: true,
     requireElevator: false,
     preferShade: true,
+    preferWellLit: false,
     avoidRain: false,
     minimizeTransfers: true,
     maxSlope: 8,
@@ -50,9 +56,11 @@ export const MOBILITY_PRESETS = Object.freeze({
     avoidStairs: false,
     requireCurb: false,
     curbPolicy: "allowUnknown",
+    requireVerifiedCurbAccess: false,
     preferSmooth: false,
     requireElevator: false,
     preferShade: false,
+    preferWellLit: false,
     avoidRain: false,
     minimizeTransfers: false,
     maxSlope: 10,
@@ -71,9 +79,11 @@ export const DEFAULT_PROFILE = Object.freeze({
     avoidStairs: true,
     requireCurb: true,
     curbPolicy: "required",
+    requireVerifiedCurbAccess: false,
     preferSmooth: true,
     requireElevator: true,
     preferShade: false,
+    preferWellLit: false,
     avoidRain: false,
     minimizeTransfers: true,
     maxSlope: 6,
@@ -124,9 +134,11 @@ export function normalizeProfile(value) {
       avoidStairs: booleanOr(needs.avoidStairs, preset.avoidStairs),
       requireCurb: booleanOr(needs.requireCurb, preset.requireCurb),
       curbPolicy: validCurbPolicy(needs.curbPolicy, preset.curbPolicy),
+      requireVerifiedCurbAccess: booleanOr(needs.requireVerifiedCurbAccess, preset.requireVerifiedCurbAccess),
       preferSmooth: booleanOr(needs.preferSmooth, preset.preferSmooth),
       requireElevator: booleanOr(needs.requireElevator, preset.requireElevator),
       preferShade: booleanOr(needs.preferShade, preset.preferShade),
+      preferWellLit: booleanOr(needs.preferWellLit, preset.preferWellLit),
       avoidRain: booleanOr(needs.avoidRain, preset.avoidRain),
       minimizeTransfers: booleanOr(needs.minimizeTransfers, preset.minimizeTransfers),
       maxSlope: clampNumber(needs.maxSlope, 2, 12, preset.maxSlope),
@@ -156,9 +168,11 @@ export function profileNeedsToLabels(needs) {
   const labels = [];
   if (needs.avoidStairs) labels.push("No stairs");
   if (needs.requireCurb) labels.push("Curb ramps");
+  if (needs.requireVerifiedCurbAccess) labels.push("Verified curb access");
   if (needs.preferSmooth) labels.push("Smooth surfaces");
   if (needs.requireElevator) labels.push("Working elevators");
   if (needs.preferShade) labels.push("Shade");
+  if (needs.preferWellLit) labels.push("Better-lit routes");
   if (needs.avoidRain) labels.push("Rain cover");
   if (needs.minimizeTransfers) labels.push("Fewer transfers");
   labels.push(`Slope ≤ ${needs.maxSlope}%`);

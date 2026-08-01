@@ -3,6 +3,7 @@
 import { PROFILE_WEIGHTS, dijkstra, summarizeRoute } from "./routing.js";
 import { findNearestNode, haversineMeters } from "./osm-network.js";
 import { accessiblePathSupports } from "./elevator-status.js";
+import { lineGeometry } from "./route-model.js";
 
 const TRANSIT_MODES = new Set(["bus", "subway", "ferry"]);
 
@@ -10,25 +11,49 @@ const TRANSIT_MODES = new Set(["bus", "subway", "ferry"]);
 export function prepareTransitStops(pedestrianNodes, transitStops = [], options = {}) {
   const maxSnapDistanceMeters = Math.max(1, Number(options.maxSnapDistanceMeters || 140));
   return (Array.isArray(transitStops) ? transitStops : []).filter(isPassThroughStopUsable).map(stop => {
-    const nearest = findNearestNode(pedestrianNodes, stop.coordinates, maxSnapDistanceMeters);
-    const anyNearest = nearest || findNearestNode(pedestrianNodes, stop.coordinates);
+    const exact = findNearestNode(pedestrianNodes, stop.coordinates, 1);
+    const providerConnector = exact
+      ? exactStopConnector(stop, exact)
+      : verifiedStopConnector(stop, pedestrianNodes, {
+        maxSnapDistanceMeters,
+        maxConnectorDistanceMeters: options.maxConnectorDistanceMeters
+      });
+    const anyNearest = findNearestNode(pedestrianNodes, stop.coordinates);
+    const connector = providerConnector || {
+      originalCoordinates: [...stop.coordinates],
+      pedestrianNodeId: null,
+      snapDistanceMeters: anyNearest?.distanceMeters ?? Infinity,
+      connectorGeometry: null,
+      connectorDistanceMeters: 0,
+      connectorStatus: anyNearest?.node && anyNearest.distanceMeters > maxSnapDistanceMeters ? "too_far" : "unavailable",
+      connectorSource: null
+    };
     return {
       ...stop,
       originalCoordinates: [...stop.coordinates],
-      pedestrianNodeId: nearest?.node.id || null,
-      snapDistanceMeters: anyNearest?.distanceMeters ?? Infinity,
-      snapStatus: nearest?.node ? "valid" : anyNearest?.node ? "too_far" : "unavailable"
+      pedestrianNodeId: connector.pedestrianNodeId,
+      snapDistanceMeters: connector.snapDistanceMeters,
+      connectorGeometry: connector.connectorGeometry,
+      connectorDistanceMeters: connector.connectorDistanceMeters,
+      connectorStatus: connector.connectorStatus,
+      connectorSource: connector.connectorSource,
+      accessConnector: connector,
+      snapStatus: ["verified", "estimated"].includes(connector.connectorStatus)
+        ? "valid"
+        : connector.connectorStatus
     };
   });
 }
 
 export function isBoardingStopUsable(stop, needs = {}, travelMode = null, context = {}) {
   if (!stop || stop.closed) return false;
-  if (stop.snapStatus && stop.snapStatus !== "valid") return false;
-  if (!needs?.wheelchairMode && !needs?.requireElevator && !needs?.requireCurb) return true;
+  if (!["verified", "estimated"].includes(stop.connectorStatus)
+    && stop.snapStatus !== "valid") return false;
+  if (travelMode === "subway" && !isStreetEntrance(stop)) return false;
+  if (!needs?.wheelchairMode && !needs?.requireElevator && !needs?.avoidStairs && !needs?.requireCurb && !needs?.requireVerifiedCurbAccess) return true;
   if (stop.wheelchairAccessible === false) return false;
   const modes = travelMode ? [travelMode] : (stop.modes || []);
-  if (modes.includes("subway") && needs.requireElevator) {
+  if (modes.includes("subway") && (needs.wheelchairMode || needs.requireElevator || needs.avoidStairs)) {
     if (!Array.isArray(stop.accessiblePaths) || !stop.accessiblePaths.length) return false;
     const action = context.action || "boarding";
     const platformStopId = action === "exit"
@@ -42,7 +67,10 @@ export function isBoardingStopUsable(stop, needs = {}, travelMode = null, contex
       requireCompletePath: true
     }))) return false;
   }
-  if (modes.includes("bus") && (needs.wheelchairMode || needs.requireCurb) && stop.curbAccess !== true) return false;
+  if (modes.includes("bus") && (needs.wheelchairMode || needs.requireCurb || needs.requireVerifiedCurbAccess)) {
+    if (stop.curbAccess === false) return false;
+    if (stop.curbAccess !== true && needs.requireVerifiedCurbAccess) return false;
+  }
   if (modes.includes("ferry") && stop.gangwayAccessible === false) return false;
   return true;
 }
@@ -139,12 +167,24 @@ export function planTransitRoutes({
         access,
         egress,
         transit,
+        departureTime: departureTime instanceof Date
+          ? departureTime.toISOString()
+          : new Date(departureTime).toISOString(),
         totalMinutes: access.metrics.minutes + (transit.durationSeconds + transit.totalWaitSeconds) / 60 + egress.metrics.minutes,
         walkingMinutes: access.metrics.minutes + egress.metrics.minutes,
         transitMinutes: transit.durationSeconds / 60,
         transfers: transit.transfers,
-        warnings: ferryWarnings(transit.edges),
-        score: access.metrics.minutes + transit.scoreSeconds / 60 + egress.metrics.minutes
+        warnings: [
+          ...ferryWarnings(transit.edges),
+          ...curbAccessWarnings(entry, exit, needs),
+          ...connectorWarnings(entry, exit),
+          ...subwayPathWarnings(transit.edges, stopMap)
+        ],
+        score: access.metrics.minutes
+          + transit.scoreSeconds / 60
+          + egress.metrics.minutes
+          + curbUncertaintyPenalty(entry, needs)
+          + curbUncertaintyPenalty(exit, needs)
       };
       const validation = validateTransitItinerary(itinerary, { mode, needs, startCoordinates, endCoordinates, stopMap });
       if (validation.valid) itineraries.push(itinerary);
@@ -158,14 +198,19 @@ export function validateTransitItinerary(itinerary, { mode, needs = {}, startCoo
   const edges = itinerary?.transit?.edges || [];
   if (!edges.length) reasons.push("itinerary has no transit movement");
   const ids = new Set();
+  const logicalEdges = new Set();
   let previousTo = null;
   for (let index = 0; index < edges.length; index += 1) {
     const edge = edges[index];
     const from = stopMap.get(edge.reverse ? edge.to : edge.from);
     const to = stopMap.get(edge.reverse ? edge.from : edge.to);
     if (!from || !to) reasons.push("transit edge has an unknown stop");
-    if (ids.has(edge.id)) reasons.push("transit edge is duplicated");
-    ids.add(edge.id);
+    const logicalId = `${edge.id}:${edge.reverse ? "reverse" : "forward"}`;
+    if (ids.has(logicalId)) reasons.push("transit edge is duplicated");
+    ids.add(logicalId);
+    const logicalEdge = `${edge.mode}:${edge.reverse ? edge.to : edge.from}:${edge.reverse ? edge.from : edge.to}:${edge.route || ""}`;
+    if (logicalEdges.has(logicalEdge)) reasons.push("transit edge is logically duplicated");
+    logicalEdges.add(logicalEdge);
     if (!Number.isFinite(Number(edge.minutes)) || Number(edge.minutes) < 0) reasons.push("transit edge has invalid duration");
     if (!validCoordinates(from?.coordinates) || !validCoordinates(to?.coordinates)) reasons.push("transit edge has invalid coordinate order");
     if (previousTo && previousTo !== (edge.reverse ? edge.to : edge.from)) reasons.push("transit edges are disconnected");
@@ -173,6 +218,7 @@ export function validateTransitItinerary(itinerary, { mode, needs = {}, startCoo
     if (edge.mode === "transfer" && (edge.providerConfirmed !== true || edge.geometryVerified !== true || edge.accessiblePathComplete !== true)) reasons.push("transfer is not provider-confirmed with a complete accessible path");
     if (edge.mode === "transfer" && (!Number.isFinite(Number(edge.minimumTransferSeconds)) || Number(edge.minimumTransferSeconds) < 0)) reasons.push("transfer has no provider minimum connection time");
     if (edge.mode === "transfer" && from && to && haversineMeters(from.coordinates, to.coordinates) > 750 && !edge.geometryVerified) reasons.push("transfer geometry has an implausible geographic gap");
+    if (edge.geometryVerified === true && !geometryConnectsStops(edge.geometry, from, to, edge.reverse)) reasons.push("transit edge geometry does not connect to its stops");
     if (edge.mode !== "transfer" && edge.reverse && edge.bidirectional !== true) reasons.push("transit edge travels against its provider direction");
     if (edge.fromSequence != null && edge.toSequence != null && !edge.reverse && Number(edge.toSequence) <= Number(edge.fromSequence)) reasons.push("transit stop sequence is not forward");
     previousTo = edge.reverse ? edge.from : edge.to;
@@ -191,8 +237,8 @@ export function validateTransitItinerary(itinerary, { mode, needs = {}, startCoo
   if (lastStopId && lastStopId !== itinerary?.exitStop?.id) reasons.push("last transit leg does not end at the exit stop");
   if (!isBoardingStopUsable(itinerary?.entryStop, needs, firstEdge?.mode, { edge: firstEdge })) reasons.push("boarding stop is not usable");
   if (!isExitStopUsable(itinerary?.exitStop, needs, lastEdge?.mode, { edge: lastEdge })) reasons.push("exit stop is not usable");
-  if (startCoordinates && itinerary?.access?.route && !itinerary.access.route.path?.length) reasons.push("access route is incomplete");
-  if (endCoordinates && itinerary?.egress?.route && !itinerary.egress.route.path?.length) reasons.push("egress route is incomplete");
+  if (startCoordinates && (!itinerary?.access?.route?.path?.length || !validStopConnector(itinerary?.entryStop))) reasons.push("access route is incomplete");
+  if (endCoordinates && (!itinerary?.egress?.route?.path?.length || !validStopConnector(itinerary?.exitStop))) reasons.push("egress route is incomplete");
   return { valid: reasons.length === 0, reasons };
 }
 
@@ -338,17 +384,17 @@ function buildEndpointCandidates({
 }) {
   const isAccess = kind === "access";
   const connected = stops
-    .filter(stop => stop.pedestrianNodeId && (!stop.snapStatus || stop.snapStatus === "valid"))
+    .filter(stop => stop.pedestrianNodeId && validStopConnector(stop))
     .filter(stop => isEndpointStopUsable(stop, needs, mode, predicate))
     .filter(stop => edges.some(edge => {
       if (!edgeAllowed(edge, mode)) return false;
-      return isAccess ? edge.from === stop.id : edge.to === stop.id;
+      return isAccess
+        ? edge.from === stop.id || (edge.bidirectional === true && edge.to === stop.id)
+        : edge.to === stop.id || (edge.bidirectional === true && edge.from === stop.id);
     }))
-    .sort((a, b) => {
-      const importance = Number(b.providerImportance || b.importance || 0) - Number(a.providerImportance || a.importance || 0);
-      if (importance) return importance;
-      return haversineMeters(endpointCoordinates, a.coordinates) - haversineMeters(endpointCoordinates, b.coordinates);
-    })
+    .sort((a, b) => candidateUsefulnessScore(b, edges, isAccess, needs)
+      - candidateUsefulnessScore(a, edges, isAccess, needs)
+      || haversineMeters(endpointCoordinates, a.coordinates) - haversineMeters(endpointCoordinates, b.coordinates))
     .slice(0, search.maxEvaluations);
   const candidates = [];
   for (const stop of connected) {
@@ -356,10 +402,17 @@ function buildEndpointCandidates({
     const to = isAccess ? stop.pedestrianNodeId : endpointId;
     const walking = getWalkingRoute(from, to, kind, cache, nodes, pedestrianEdges, needs, weather, weights);
     if (!walking || walking.metrics.minutes > maxWalkMinutes) continue;
-    candidates.push({ stop, walking, networkWalkMinutes: walking.metrics.minutes });
+    candidates.push({
+      stop,
+      walking,
+      networkWalkMinutes: walking.metrics.minutes,
+      usefulness: candidateUsefulnessScore(stop, edges, isAccess, needs)
+    });
   }
   return candidates
-    .sort((a, b) => a.networkWalkMinutes - b.networkWalkMinutes
+    .sort((a, b) => a.networkWalkMinutes + curbUncertaintyPenalty(a.stop, needs)
+      - (b.networkWalkMinutes + curbUncertaintyPenalty(b.stop, needs))
+      || b.usefulness - a.usefulness
       || Number(b.stop.providerImportance || b.stop.importance || 0) - Number(a.stop.providerImportance || a.stop.importance || 0))
     .slice(0, search.maxCandidates);
 }
@@ -536,4 +589,139 @@ function rankAlternatives(itineraries, needs) {
     return true;
   });
   return ordered.map((item, index) => ({ ...item, optionLabel: index === 0 ? "Recommended" : index === 1 && needs.minimizeTransfers ? "Fewer transfers" : "Alternative" }));
+}
+
+function exactStopConnector(stop, nearest) {
+  return {
+    originalCoordinates: [...stop.coordinates],
+    pedestrianNodeId: nearest.node.id,
+    snapDistanceMeters: nearest.distanceMeters,
+    connectorGeometry: null,
+    connectorDistanceMeters: 0,
+    connectorStatus: "verified",
+    connectorSource: "Exact pedestrian graph node"
+  };
+}
+
+function verifiedStopConnector(stop, pedestrianNodes, options) {
+  const supplied = stop.pedestrianConnector || stop.accessConnector;
+  const geometry = lineGeometry(supplied?.connectorGeometry || supplied?.geometry);
+  if (!geometry || !["verified", "estimated"].includes(supplied?.connectorStatus || supplied?.status)) return null;
+  const first = geometry.coordinates[0];
+  const last = geometry.coordinates.at(-1);
+  if (haversineMeters(stop.coordinates, first) > 12) return null;
+  const namedNode = supplied.pedestrianNodeId ? pedestrianNodes?.[supplied.pedestrianNodeId] : null;
+  const nearest = namedNode && haversineMeters(last, namedNode.coordinates) <= 3
+    ? { node: namedNode, distanceMeters: haversineMeters(stop.coordinates, namedNode.coordinates) }
+    : findNearestNode(pedestrianNodes, last, 3);
+  if (!nearest?.node) return null;
+  const snapDistanceMeters = haversineMeters(stop.coordinates, nearest.node.coordinates);
+  const connectorDistanceMeters = geometryDistance(geometry.coordinates);
+  const maxConnectorDistanceMeters = Math.max(
+    1,
+    Number(options.maxConnectorDistanceMeters || options.maxSnapDistanceMeters || 140)
+  );
+  if (snapDistanceMeters > options.maxSnapDistanceMeters
+    || connectorDistanceMeters > maxConnectorDistanceMeters
+    || connectorDistanceMeters + 8 < snapDistanceMeters
+    || connectorDistanceMeters > snapDistanceMeters * 3 + 40) return null;
+  return {
+    originalCoordinates: [...stop.coordinates],
+    pedestrianNodeId: nearest.node.id,
+    snapDistanceMeters,
+    connectorGeometry: geometry,
+    connectorDistanceMeters,
+    connectorStatus: supplied.connectorStatus || supplied.status,
+    connectorSource: String(supplied.connectorSource || supplied.source || "Transit topology provider")
+  };
+}
+
+function validStopConnector(stop) {
+  if (!stop?.pedestrianNodeId || !["verified", "estimated"].includes(stop.connectorStatus)) return false;
+  if (Number(stop.connectorDistanceMeters || 0) <= 1 && Number(stop.snapDistanceMeters || 0) <= 1) return true;
+  const geometry = lineGeometry(stop.connectorGeometry);
+  return Boolean(geometry
+    && haversineMeters(stop.originalCoordinates || stop.coordinates, geometry.coordinates[0]) <= 12
+    && Number(stop.connectorDistanceMeters) > 0);
+}
+
+function isStreetEntrance(stop) {
+  if (stop.boardingLocationType === "parent_station") return false;
+  if (stop.boardingLocationType === "street_entrance") return true;
+  return Boolean(stop.entranceId && stop.platformStopId);
+}
+
+function candidateUsefulnessScore(stop, edges, isAccess, needs) {
+  const relevant = edges.filter(edge => {
+    if (edge.mode === "transfer") return edge.from === stop.id || edge.to === stop.id;
+    return isAccess
+      ? edge.from === stop.id || (edge.bidirectional === true && edge.to === stop.id)
+      : edge.to === stop.id || (edge.bidirectional === true && edge.from === stop.id);
+  });
+  const serviceRoutes = new Set(relevant.filter(edge => edge.mode !== "transfer").map(edge => `${edge.mode}:${edge.route}`)).size;
+  const transferUsefulness = relevant.filter(edge => edge.mode === "transfer").length;
+  const accessiblePathBonus = stop.accessiblePaths?.some(path =>
+    path.complete && path.status === "working" && path.freshness === "current"
+  ) ? 6 : 0;
+  const curbScore = stop.curbAccess === true ? 4 : stop.curbAccess === false ? -12 : needs.requireVerifiedCurbAccess ? -20 : -2;
+  const connectorScore = stop.connectorStatus === "verified" ? 5 : stop.connectorStatus === "estimated" ? 1 : -20;
+  return serviceRoutes * 4
+    + transferUsefulness * 2
+    + accessiblePathBonus
+    + curbScore
+    + connectorScore
+    + Number(stop.providerImportance || stop.importance || 0) * 3;
+}
+
+function curbUncertaintyPenalty(stop, needs) {
+  if (stop?.curbAccess === true || stop?.curbAccess === false) return 0;
+  return needs.wheelchairMode || needs.requireCurb ? 3 : 1.5;
+}
+
+function curbAccessWarnings(entry, exit) {
+  if ([entry, exit].some(stop => stop?.modes?.includes("bus") && stop.curbAccess !== true && stop.curbAccess !== false)) {
+    return ["Curb access could not be verified at one or more bus stops."];
+  }
+  return [];
+}
+
+function connectorWarnings(entry, exit) {
+  return [entry, exit].some(stop => stop?.connectorStatus === "estimated")
+    ? ["Pedestrian access geometry to one or more transit stops is estimated."]
+    : [];
+}
+
+function subwayPathWarnings(edges, stopMap) {
+  const subwayStops = new Set();
+  for (const edge of edges) {
+    if (edge.mode !== "subway") continue;
+    subwayStops.add(edge.reverse ? edge.to : edge.from);
+    subwayStops.add(edge.reverse ? edge.from : edge.to);
+  }
+  const unverified = [...subwayStops].some(stopId => {
+    const stop = stopMap.get(stopId);
+    return !stop?.accessiblePaths?.some(path =>
+      path.complete
+      && path.status === "working"
+      && path.freshness === "current"
+      && Number.isFinite(Date.parse(path.updatedAt))
+    );
+  });
+  return unverified ? ["The accessible path for this station could not be verified."] : [];
+}
+
+function geometryConnectsStops(value, from, to, reverse = false) {
+  const geometry = lineGeometry(value);
+  if (!geometry || !from || !to) return false;
+  const coordinates = reverse ? [...geometry.coordinates].reverse() : geometry.coordinates;
+  return haversineMeters(from.coordinates, coordinates[0]) <= 25
+    && haversineMeters(to.coordinates, coordinates.at(-1)) <= 25;
+}
+
+function geometryDistance(coordinates) {
+  let total = 0;
+  for (let index = 1; index < coordinates.length; index += 1) {
+    total += haversineMeters(coordinates[index - 1], coordinates[index]);
+  }
+  return total;
 }

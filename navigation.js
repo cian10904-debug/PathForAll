@@ -54,93 +54,6 @@ export function buildWalkingNavigationSteps(routeResult, edges, nodes, destinati
   return compressWalkingSteps(steps);
 }
 
-export function buildTransitNavigationSteps(itinerary, pedestrianEdges, pedestrianNodes, arrivals = null, destinationName = "destination") {
-  if (!itinerary) return [];
-  const access = buildWalkingNavigationSteps(itinerary.access?.route, pedestrianEdges, pedestrianNodes, itinerary.entryStop?.name || "transit stop")
-    .filter(step => step.type !== "arrive");
-  const egress = buildWalkingNavigationSteps(itinerary.egress?.route, pedestrianEdges, pedestrianNodes, destinationName)
-    .filter(step => step.type !== "arrive");
-
-  const transitSteps = [];
-  const rideEdges = itinerary.transit?.edges || [];
-  let activeGroup = null;
-  for (const edge of rideEdges) {
-    if (edge.mode === "transfer") {
-      if (activeGroup) {
-        transitSteps.push(toRideStep(activeGroup));
-        activeGroup = null;
-      }
-      transitSteps.push({
-        id: `transfer-${edge.id}`,
-        type: "transfer",
-        icon: "↔",
-        instruction: "Make the accessible transfer",
-        detail: `${Math.round(edge.minutes)} min transfer`,
-        distanceMeters: 0,
-        minutes: Number(edge.minutes || 0),
-        coordinates: edge.geometryVerified ? (edge.reverse ? [...edge.geometry].reverse() : edge.geometry) : [],
-        targetCoordinate: edge.geometryVerified ? (edge.reverse ? edge.geometry[0] : edge.geometry.at(-1)) : null
-      });
-      continue;
-    }
-    const groupKey = `${edge.mode}:${edge.route}`;
-    if (!activeGroup || activeGroup.key !== groupKey) {
-      if (activeGroup) transitSteps.push(toRideStep(activeGroup));
-      activeGroup = {
-        key: groupKey,
-        mode: edge.mode,
-        route: edge.route,
-        minutes: 0,
-        coordinates: [],
-        from: edge.reverse ? edge.to : edge.from,
-        to: edge.reverse ? edge.from : edge.to,
-        edgeIds: []
-      };
-    }
-    activeGroup.minutes += Number(edge.minutes || 0);
-    activeGroup.edgeIds.push(edge.id);
-    const geometry = edge.geometryVerified ? (edge.reverse ? [...edge.geometry].reverse() : edge.geometry) : [];
-    appendCoordinates(activeGroup.coordinates, geometry);
-    activeGroup.to = edge.reverse ? edge.from : edge.to;
-  }
-  if (activeGroup) transitSteps.push(toRideStep(activeGroup));
-
-  const firstRide = transitSteps.find(step => step.type === "bus" || step.type === "subway" || step.type === "ferry");
-  const arrival = arrivals?.primary || null;
-  const boardStep = firstRide ? {
-    id: `board-${firstRide.id}`,
-    type: "board",
-    icon: transitIcon(firstRide.type),
-    instruction: `Board ${firstRide.type === "ferry" ? "Statue City Cruises" : `${firstRide.type} ${firstRide.route}`}`,
-    detail: arrival
-      ? `${arrival.sourceLabel} arrival in ${arrival.minutes} min at ${itinerary.entryStop.name}`
-      : `Board at ${itinerary.entryStop.name}`,
-    distanceMeters: 0,
-    minutes: Math.max(0, Number(arrival?.minutes || 0)),
-    coordinates: [itinerary.entryStop.coordinates],
-    targetCoordinate: itinerary.entryStop.coordinates,
-    arrival
-  } : null;
-
-  return [
-    ...access,
-    ...(boardStep ? [boardStep] : []),
-    ...transitSteps,
-    ...egress,
-    {
-      id: "arrive",
-      type: "arrive",
-      icon: "●",
-      instruction: `Arrive at ${destinationName}`,
-      detail: "Trip complete.",
-      distanceMeters: 0,
-      minutes: 0,
-      coordinates: [itinerary.egress?.route ? pedestrianNodes[itinerary.egress.route.path.at(-1)]?.coordinates : itinerary.exitStop.coordinates].filter(Boolean),
-      targetCoordinate: itinerary.egress?.route ? pedestrianNodes[itinerary.egress.route.path.at(-1)]?.coordinates : itinerary.exitStop.coordinates
-    }
-  ].filter(step => step.targetCoordinate);
-}
-
 export function routeCoordinates(routeOption) {
   if (Array.isArray(routeOption?.legs)) {
     const coordinates = [];
@@ -316,21 +229,6 @@ export function findNavigationProgress(position, steps, currentIndex = 0) {
 
 export function remainingMinutes(steps, stepIndex) {
   return (steps || []).slice(stepIndex).reduce((sum, step) => sum + Number(step.minutes || 0), 0);
-}
-
-function toRideStep(group) {
-  return {
-    id: `ride-${group.key}-${group.edgeIds.join("-")}`,
-    type: group.mode,
-    route: group.route,
-    icon: transitIcon(group.mode),
-    instruction: `Ride ${group.mode === "ferry" ? "Statue City Cruises" : `${group.mode} ${group.route}`}`,
-    detail: `${Math.round(group.minutes)} min on transit`,
-    distanceMeters: segmentDistance(group.coordinates),
-    minutes: group.minutes,
-    coordinates: group.coordinates,
-    targetCoordinate: group.coordinates.at(-1)
-  };
 }
 
 function transitIcon(mode) {

@@ -36,7 +36,12 @@ export function configuredRoutingCapabilities({
 }
 
 export function providerSupportsMode(capabilities, mode) {
-  return Boolean(capabilities?.available && capabilities.modes?.includes(String(mode || "").toLowerCase()));
+  const supportedModes = capabilities?.supportedModes || capabilities?.modes || [];
+  return Boolean(
+    capabilities?.available
+    && capabilities?.routeProvider !== false
+    && supportedModes.includes(String(mode || "").toLowerCase())
+  );
 }
 
 export function routeSourceForMode(mode, capabilities, { transitNetwork = false } = {}) {
@@ -91,7 +96,7 @@ export function createRoutingService({
     supports(mode) {
       return providerSupportsMode(capabilities, mode);
     },
-    async plan({ start, end, needs, mode, signal }) {
+    async plan({ start, end, needs, mode, departureTime = new Date(), signal }) {
       if (!url) return [];
       if (!providerSupportsMode(capabilities, mode)) {
         throw new TransitProviderError("UNSUPPORTED_MODE", `The connected route provider does not support ${mode} routing.`, {
@@ -102,7 +107,13 @@ export function createRoutingService({
         method: "POST",
         headers: { "Content-Type": "application/json", Accept: "application/json" },
         signal,
-        body: JSON.stringify({ start: start.coordinates, end: end.coordinates, needs, mode })
+        body: JSON.stringify({
+          start: start.coordinates,
+          end: end.coordinates,
+          needs,
+          mode,
+          departureTime: validTimestamp(departureTime)
+        })
       }, {
         fetchImpl,
         timeoutMs: 20_000,
@@ -176,11 +187,11 @@ export function normalizeServerRoute(route, index = 0, context = {}) {
     trust: { confidence: Number(route?.dataConfidence ?? route?.accessibility?.confidence ?? .55), unknownSegments: Number(route?.accessibility?.unknownSegments || 0), reviewedPercent: 0 },
     warnings: route?.warnings || route?.alerts || route?.reasons || [],
     dataSource: route?.dataSource || route?.provider || "Routing service",
+    endpointConnections: route?.endpointConnections,
     dataVersion: route?.dataVersion || context.dataVersion,
     serviceAlertVersion: route?.serviceAlertVersion || context.serviceAlertVersion,
     elevatorStatusVersion: route?.elevatorStatusVersion || context.elevatorStatusVersion,
-    providerUpdatedAt: route?.updatedAt || context.providerUpdatedAt
-    ,
+    providerUpdatedAt: route?.updatedAt || context.providerUpdatedAt,
     dataFreshness: route?.dataFreshness || route?.freshness || context.dataFreshness,
     updatedAt: route?.updatedAt || context.providerUpdatedAt,
     expiresAt: route?.expiresAt || context.expiresAt
@@ -292,7 +303,10 @@ function normalizeCapabilities(value = {}, available = true, options = {}) {
   const checked = value.checked === true;
   return {
     available: Boolean(available && value.available !== false),
-    modes: parseModes(value.modes),
+    routeProvider: Boolean(available && value.routeProvider !== false),
+    supportedModes: parseModes(value.supportedModes || value.modes),
+    modes: parseModes(value.supportedModes || value.modes),
+    transitNetwork: value.transitNetwork === true,
     realtimeArrivals: value.realtimeArrivals === true,
     elevatorStatus: value.elevatorStatus === true,
     elevatorAccessibilityPaths: value.elevatorAccessibilityPaths === true,
