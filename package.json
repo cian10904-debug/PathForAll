@@ -12,7 +12,7 @@
     "build": "vite build",
     "preview": "npm run build && vite preview --host 0.0.0.0",
     "test": "npm run test:unit",
-    "test:unit": "node test-route-model.js && node test-provider-capabilities.js && node test-transit-connections.js && node test-route-presentation.js && node test-route-session.js && node test-transit-arrivals.js && node test-transit-production.js && node test-ferry.js && node test-transit-ui.js && node test-routing.js && node test-navigation.js && node test-trust.js && node test-storage.js && node test-route-safety.js && node test-nyc-expansion.js && node test-search.js && node test-production-imports.js",
+    "test:unit": "node test-route-model.js && node test-provider-capabilities.js && node test-transit-connections.js && node test-route-presentation.js && node test-route-session.js && node test-transit-arrivals.js && node test-transit-production.js && node test-production-pipeline.js && node test-ferry.js && node test-transit-ui.js && node test-routing.js && node test-navigation.js && node test-trust.js && node test-storage.js && node test-route-safety.js && node test-nyc-expansion.js && node test-search.js && node test-production-imports.js && node test-packaging.js",
     "test:e2e": "playwright test",
     "lint:js": "eslint .",
     "lint:css": "stylelint styles.css",

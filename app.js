@@ -76,6 +76,7 @@ const state = {
   endPlace: null,
   startId: null,
   endId: null,
+  endpointConnections: {},
   endpointMarkers: { start: null, end: null },
   transitStopMarkers: [],
   travelMode: "walk",
@@ -99,6 +100,7 @@ const state = {
   dialogTrigger: null,
   pageTrigger: null,
   mapPickType: null,
+  mapPickSnapshot: null,
   tripNeeds: emptyTripNeeds(),
   navigation: {
     active: false,
@@ -151,15 +153,15 @@ function cacheElements() {
     "useLocationButton", "swapButton", "activeNeeds", "planButton", "plannerMessage", "resultsPanel",
     "resultsTitle", "routeCards", "closeResultsButton", "avatarPickerButton", "avatarTextButton", "avatarInput",
     "accountForm", "nameInput", "emailInput", "signOutButton", "needsForm", "savedStatus",
-    "mobilityProfile", "avoidStairs", "requireCurb", "preferSmooth", "requireElevator", "preferShade", "avoidRain", "minimizeTransfers",
+    "mobilityProfile", "avoidStairs", "requireCurb", "requireVerifiedCurbAccess", "preferSmooth", "requireElevator", "preferShade", "preferWellLit", "avoidRain", "minimizeTransfers",
     "maxSlope", "maxSlopeOutput", "maxWalkMinutes", "maxWalkOutput", "customNeedInput", "addCustomNeedButton",
-    "customNeedList", "tripAvoidStairs", "tripRequireElevator", "tripPreferSmooth", "tripPreferShade",
+    "customNeedList", "tripAvoidStairs", "tripRequireElevator", "tripPreferSmooth", "tripPreferShade", "tripPreferWellLit",
     "tripAvoidRain", "tripMinimizeTransfers", "speechLanguage", "tripNeedsInput", "voiceNeedsButton",
     "applyTripNeedsButton", "clearTripNeedsButton", "tripNeedsSummary", "startNavigationButton", "arrivalSourceNote",
     "navigationOverlay", "navigationTurnIcon", "navigationDistance", "navigationInstruction", "navigationDetail",
     "navigationEta", "navigationRemaining", "navigationAccuracy", "upcomingSteps", "recenterButton", "demoMovementButton",
     "endNavigationButton", "navigationMessage", "transitConnectionBadge", "transitDataSummary", "transitDataDetail",
-    "checkTransitConnectionsButton", "transitConnectionList", "transitModeAvailability", "routeTrustSummary", "reviewSegmentsButton", "saveRouteButton", "savedPlacesList",
+    "checkTransitConnectionsButton", "transitConnectionList", "transitModeAvailability", "plannerTransitStatus", "routeTrustSummary", "reviewSegmentsButton", "saveRouteButton", "savedPlacesList",
     "verificationPanel", "closeVerificationButton", "verificationList", "exportPilotButton", "metricRoutes",
     "metricCompleted", "metricReroutes", "metricReviews", "pilotMetricNote", "transitDiagnostics", "transitDiagnosticsJson",
     "copyTransitDiagnosticsButton", "copyTransitDiagnosticsStatus",
@@ -222,7 +224,7 @@ function bindEvents() {
   els.applyTripNeedsButton.addEventListener("click", applyTemporaryNeeds);
   els.clearTripNeedsButton.addEventListener("click", clearTemporaryNeeds);
   els.voiceNeedsButton.addEventListener("click", startVoiceNeedsInput);
-  ["tripAvoidStairs", "tripRequireElevator", "tripPreferSmooth", "tripPreferShade", "tripAvoidRain", "tripMinimizeTransfers"]
+  ["tripAvoidStairs", "tripRequireElevator", "tripPreferSmooth", "tripPreferShade", "tripPreferWellLit", "tripAvoidRain", "tripMinimizeTransfers"]
     .forEach(id => els[id].addEventListener("change", applyTemporaryNeeds));
   els.startNavigationButton.addEventListener("click", startNavigation);
   els.endNavigationButton.addEventListener("click", endNavigation);
@@ -329,7 +331,7 @@ function setTravelMode(mode) {
   const requestedButton = document.querySelector(`.mode-chip[data-mode="${mode}"]`);
   if (mode !== "walk" && requestedButton?.disabled) {
     setPlannerMessage(
-      "This transit mode requires an application-owned route or transit service. Check the connection details below or continue with Walk.",
+      "This transit mode requires a connected route or transit service. Check Profile → Data sources or continue with Walk.",
       "warning"
     );
     return;
@@ -363,6 +365,8 @@ function selectPlace(type, place, options = {}) {
   state.routeSession.cancel();
   state.routes = [];
   state.selectedRouteIndex = 0;
+  state.networkReady = false;
+  state.endpointConnections = {};
   clearSelectedRoute();
   closeResultsPanel({ restoreFocus: false });
   els.startNavigationButton.disabled = true;
@@ -396,7 +400,21 @@ function toggleMapPointSelection(type) {
 }
 
 function beginMapPointSelection(type) {
+  const plannerSheet = document.querySelector(".planner-sheet");
+  if (!state.mapPickType) {
+    state.mapPickSnapshot = {
+      plannerContentHidden: els.plannerContent.hidden,
+      sheetCollapsed: plannerSheet.classList.contains("collapsed"),
+      sheetExpanded: els.sheetToggleButton.getAttribute("aria-expanded"),
+      sheetInert: plannerSheet.inert,
+      sheetAriaHidden: plannerSheet.getAttribute("aria-hidden"),
+      triggerId: document.activeElement?.id || null
+    };
+  }
   state.mapPickType = type;
+  document.body.classList.add("map-pick-active");
+  plannerSheet.inert = true;
+  plannerSheet.setAttribute("aria-hidden", "true");
   state.searchController.hideAll();
   els.mapPickBanner.hidden = false;
   els.mapPickText.textContent = type === "start"
@@ -407,6 +425,7 @@ function beginMapPointSelection(type) {
   els.setStartOnMapButton.setAttribute("aria-pressed", String(type === "start"));
   els.setEndOnMapButton.setAttribute("aria-pressed", String(type === "end"));
   state.map.getCanvas().classList.add("map-picking");
+  els.cancelMapPickButton.focus();
   setPlannerMessage(type === "start" ? "Tap the map to choose your starting point." : "Tap the map to choose your destination.", "neutral");
   requestMapResize();
 }
@@ -418,13 +437,30 @@ function selectMapCenter() {
 
 function cancelMapPointSelection() {
   state.mapPickType = null;
+  document.body.classList.remove("map-pick-active");
   els.mapPickBanner.hidden = true;
   els.setStartOnMapButton.classList.remove("active");
   els.setEndOnMapButton.classList.remove("active");
   els.setStartOnMapButton.setAttribute("aria-pressed", "false");
   els.setEndOnMapButton.setAttribute("aria-pressed", "false");
   state.map?.getCanvas().classList.remove("map-picking");
+  restorePlannerAfterMapPick();
   requestMapResize();
+}
+
+function restorePlannerAfterMapPick() {
+  const snapshot = state.mapPickSnapshot;
+  state.mapPickSnapshot = null;
+  if (!snapshot) return;
+  const plannerSheet = document.querySelector(".planner-sheet");
+  els.plannerContent.hidden = snapshot.plannerContentHidden;
+  els.sheetToggleButton.setAttribute("aria-expanded", snapshot.sheetExpanded || String(!snapshot.plannerContentHidden));
+  plannerSheet.classList.toggle("collapsed", snapshot.sheetCollapsed);
+  plannerSheet.inert = snapshot.sheetInert;
+  if (snapshot.sheetAriaHidden == null) plannerSheet.removeAttribute("aria-hidden");
+  else plannerSheet.setAttribute("aria-hidden", snapshot.sheetAriaHidden);
+  const trigger = snapshot.triggerId ? document.getElementById(snapshot.triggerId) : null;
+  requestAnimationFrame(() => trigger?.focus({ preventScroll: true }));
 }
 
 async function handleMapPointClick(event) {
@@ -445,7 +481,7 @@ async function handleMapPointClick(event) {
   const snappedId = type === "start" ? state.startId : state.endId;
   const snappedNode = state.nodes[snappedId];
   const snapDistance = snappedNode ? Math.round(haversineMeters(coordinates, snappedNode.coordinates)) : null;
-  setPlannerMessage(`${type === "start" ? "Starting point" : "Destination"} set from the map${snapDistance == null ? "." : ". Route calculation will connect it to a nearby walkable street."}`, "success");
+  setPlannerMessage(`${type === "start" ? "Starting point" : "Destination"} set from the map${snapDistance == null ? "." : ". The marker will stay here while route calculation checks for a mapped pedestrian access point."}`, "success");
 
   const resolved = await reverseGeocodePlace(coordinates);
   const currentPlace = type === "start" ? state.startPlace : state.endPlace;
@@ -481,6 +517,10 @@ function useCurrentLocation() {
 function swapEndpoints() {
   [state.startPlace, state.endPlace] = [state.endPlace, state.startPlace];
   [state.startId, state.endId] = [state.endId, state.startId];
+  state.endpointConnections = {
+    start: state.endpointConnections.end,
+    end: state.endpointConnections.start
+  };
   state.routeSession.cancel();
   state.routes = [];
   state.selectedRouteIndex = 0;
@@ -559,6 +599,9 @@ async function loadStreetNetwork(corridor, options = {}) {
       state.endPlace,
       {
         maxProjectionDistanceMeters: 40,
+        maxProjectionDistanceMeters: 3,
+        maxAccessPointDistanceMeters: 160,
+        accessPoints: live.accessPoints,
         wheelchairMode: getEffectiveNeeds().wheelchairMode,
         avoidStairs: getEffectiveNeeds().avoidStairs
       }
@@ -568,6 +611,7 @@ async function loadStreetNetwork(corridor, options = {}) {
       state.edges = applyTrustMetadata(live.edges, state.segmentReviews);
       state.startId = endpointGraph.startId;
       state.endId = endpointGraph.endId;
+      state.endpointConnections = {};
       throw new RouteAvailabilityError(
         `A verified pedestrian connector is unavailable for the selected ${endpointGraph.failure?.endpointType || "place"}. Choose a point directly on a mapped pedestrian path or use a connected routing provider.`,
         "ENDPOINT_CONNECTOR_UNAVAILABLE"
@@ -577,6 +621,7 @@ async function loadStreetNetwork(corridor, options = {}) {
     state.edges = applyTrustMetadata(endpointGraph.edges, state.segmentReviews);
     state.startId = endpointGraph.startId;
     state.endId = endpointGraph.endId;
+    state.endpointConnections = endpointGraph.endpointConnections || {};
     state.networkSource = "live";
     setNetworkBadge(`${Object.keys(state.nodes).length.toLocaleString()} OSM nodes`, "success");
     setMapMessage("Live OSM pedestrian graph connected", "success");
@@ -585,6 +630,7 @@ async function loadStreetNetwork(corridor, options = {}) {
     console.warn(error);
     state.nodes = {};
     state.edges = [];
+    state.endpointConnections = {};
     state.networkSource = "unavailable";
     setNetworkBadge("Street data unavailable", "warning");
     setMapMessage("Street data could not be loaded for this route corridor", "warning");
@@ -742,7 +788,7 @@ async function calculateRoutes(options = {}) {
     if (previousRouteState) {
       restorePreviousRouteState(previousRouteState);
       state.navigation.rerouteState = "failed";
-      setNavigationMessage(`Rerouting failed: ${error.message || "no replacement route was available"}. The previous route remains visible.`);
+      setNavigationMessage("Rerouting failed because no verified replacement was available. The previous route remains visible.");
       return false;
     }
     els.routeCards.innerHTML = '<div class="empty-card"><strong>Route unavailable</strong><span>We could not find a verified street-aligned route for these locations. Your selected places are still on the map.</span></div>';
@@ -753,7 +799,7 @@ async function calculateRoutes(options = {}) {
     }
     clearSelectedRoute();
     const providerMessage = error instanceof TransitProviderError
-      ? error.message || TRANSIT_ERROR_MESSAGES[error.code]
+      ? TRANSIT_ERROR_MESSAGES[error.code] || "Transit information is unavailable for this route."
       : null;
     setPlannerMessage(error instanceof RouteAvailabilityError
       ? error.message
@@ -807,6 +853,7 @@ async function planRouteOptions({ needs, request }) {
         end: state.endPlace,
         needs,
         mode,
+        departureTime: new Date(),
         signal: request.signal
       }, { capabilities });
       if (!request.isCurrent()) return [];
@@ -851,8 +898,23 @@ async function planRouteOptions({ needs, request }) {
   );
   if (state.startId === state.endId) throw new RouteAvailabilityError("Choose two different places to find a route.");
   if (mode === "walk") {
-    const planned = planAllRoutes(state.nodes, state.edges, state.startId, state.endId, needs, state.weather);
-    return Promise.all(planned.map(item => normalizeWalkingRoute(item, { nodes: state.nodes, edges: state.edges, start: state.startPlace, end: state.endPlace, trust: summarizeRouteTrust(item.route, state.edges) })).filter(Boolean).map(route => enrichRoute(route, request))).then(routes => routes.filter(Boolean));
+    const planned = planAllRoutes(
+      state.nodes,
+      state.edges,
+      state.startId,
+      state.endId,
+      needs,
+      state.weather,
+      { departureTime: new Date() }
+    );
+    return Promise.all(planned.map(item => normalizeWalkingRoute(item, {
+      nodes: state.nodes,
+      edges: state.edges,
+      start: state.startPlace,
+      end: state.endPlace,
+      endpointConnections: state.endpointConnections,
+      trust: summarizeRouteTrust(item.route, state.edges)
+    })).filter(Boolean).map(route => enrichRoute(route, request))).then(routes => routes.filter(Boolean));
   }
 
   let network = null;
@@ -869,7 +931,10 @@ async function planRouteOptions({ needs, request }) {
     if (providerFailure) throw providerFailure;
     throw new RouteAvailabilityError("Accessible transit routing is currently unavailable. Try walking mode or try again later.");
   }
-  const stops = prepareTransitStops(state.nodes, network.stops, { maxSnapDistanceMeters: network.maxSnapDistanceMeters });
+  const stops = prepareTransitStops(state.nodes, network.stops, {
+    maxSnapDistanceMeters: network.maxSnapDistanceMeters,
+    maxConnectorDistanceMeters: network.maxConnectorDistanceMeters
+  });
   const localRoutes = planTransitRoutes({
     pedestrianNodes: state.nodes,
     pedestrianEdges: state.edges,
@@ -900,6 +965,7 @@ async function planRouteOptions({ needs, request }) {
       pedestrianNodes: state.nodes,
       pedestrianEdges: state.edges,
       transitStops: stops,
+      endpointConnections: state.endpointConnections,
       trust: summarizeRouteTrust({ edgeIds: [...(itinerary.access?.route?.edgeIds || []), ...(itinerary.egress?.route?.edgeIds || [])] }, state.edges),
       dataSource: network.dataSource,
       dataVersion: network.dataVersion,
@@ -1119,7 +1185,7 @@ function getEffectiveNeeds() {
   applyNeedTextsToObject(needs, needs.customNeeds || []);
 
   const trip = state.tripNeeds;
-  ["avoidStairs", "requireElevator", "preferSmooth", "preferShade", "avoidRain", "minimizeTransfers", "requireCurb", "wheelchairMode"]
+  ["avoidStairs", "requireElevator", "preferSmooth", "preferShade", "preferWellLit", "avoidRain", "minimizeTransfers", "requireCurb", "requireVerifiedCurbAccess", "wheelchairMode"]
     .forEach(key => {
       if (trip[key] === true) needs[key] = true;
     });
@@ -1135,6 +1201,7 @@ function emptyTripNeeds() {
     requireElevator: false,
     preferSmooth: false,
     preferShade: false,
+    preferWellLit: false,
     avoidRain: false,
     minimizeTransfers: false,
     requireCurb: false,
@@ -1150,6 +1217,7 @@ function applyTemporaryNeeds(invalidateRoutes = true) {
   trip.requireElevator = els.tripRequireElevator.checked;
   trip.preferSmooth = els.tripPreferSmooth.checked;
   trip.preferShade = els.tripPreferShade.checked;
+  trip.preferWellLit = els.tripPreferWellLit.checked;
   trip.avoidRain = els.tripAvoidRain.checked;
   trip.minimizeTransfers = els.tripMinimizeTransfers.checked;
 
@@ -1171,7 +1239,7 @@ function applyTemporaryNeeds(invalidateRoutes = true) {
 function clearTemporaryNeeds() {
   state.tripNeeds = emptyTripNeeds();
   els.tripNeedsInput.value = "";
-  ["tripAvoidStairs", "tripRequireElevator", "tripPreferSmooth", "tripPreferShade", "tripAvoidRain", "tripMinimizeTransfers"]
+  ["tripAvoidStairs", "tripRequireElevator", "tripPreferSmooth", "tripPreferShade", "tripPreferWellLit", "tripAvoidRain", "tripMinimizeTransfers"]
     .forEach(id => { els[id].checked = false; });
   renderTemporaryNeeds();
   state.routeSession.cancel();
@@ -1189,6 +1257,7 @@ function renderTemporaryNeeds() {
   if (needs.requireElevator) labels.push("Working elevator");
   if (needs.preferSmooth) labels.push("Smooth surfaces");
   if (needs.preferShade) labels.push("Shade");
+  if (needs.preferWellLit) labels.push("Better-lit route");
   if (needs.avoidRain) labels.push("Covered paths");
   if (needs.minimizeTransfers) labels.push("Fewer transfers");
   if (Number.isFinite(needs.maxSlope)) labels.push(`Slope ≤ ${needs.maxSlope}%`);
@@ -1210,6 +1279,7 @@ function applyNeedTextsToObject(needs, texts) {
     if (/curb|kerb|坡道|路缘|rampa/.test(text)) needs.requireCurb = true;
     if (/rough|uneven|smooth|surface|颠簸|平滑|路面|superficie/.test(text)) needs.preferSmooth = true;
     if (/shade|heat|sun|阴凉|遮阴|高温|sombra|calor/.test(text)) needs.preferShade = true;
+    if (/well[- ]?lit|better[- ]?lit|lighting|bright(er)? route|照明|iluminad/.test(text)) needs.preferWellLit = true;
     if (/rain|covered|dry|下雨|避雨|有顶棚|lluvia|cubierto/.test(text)) needs.avoidRain = true;
     if (/transfer|crowd|少换乘|拥挤|换乘|transbordo|multitud/.test(text)) needs.minimizeTransfers = true;
     const slope = text.match(/(?:slope|incline|坡度|斜坡|pendiente)[^0-9]{0,14}(\d{1,2})\s*%?/);
@@ -1577,6 +1647,7 @@ function renderTransitConnectionStatus() {
 
   els.transitDataSummary.textContent = report.summary;
   els.transitDataDetail.textContent = report.detail;
+  els.plannerTransitStatus.textContent = plannerTransitCopy(report);
   setConnectionBadge(report.overallStatus);
   const connectionKeys = {
     "route-provider": "routeProvider",
@@ -1612,6 +1683,16 @@ function renderTransitConnectionStatus() {
     els.transitDiagnosticsJson.textContent = "";
   }
   return report;
+}
+
+function plannerTransitCopy(report) {
+  if (!report.transitConfigured || report.overallStatus === "Unavailable") {
+    return "Transit information unavailable";
+  }
+  if (report.connections.realtimeArrivals.status !== "Connected") {
+    return "Some realtime information is unavailable";
+  }
+  return "Transit information connected";
 }
 
 function updateTransitModeAvailability(report, routeCapabilities) {
@@ -1775,6 +1856,8 @@ async function rerouteActiveNavigation(coordinates) {
   navigation.rerouteState = "pending";
   navigation.offRouteCount = 0;
   state.startId = null;
+  state.networkReady = false;
+  state.endpointConnections = {};
   state.startPlace = { id: "reroute-location", name: "Current location", subtitle: "Automatic reroute", coordinates };
   setPlaceInput("start", state.startPlace);
   updateEndpointMarker("start");
@@ -1893,7 +1976,7 @@ function renderProfile() {
 
   const needs = profile.needs;
   els.mobilityProfile.value = needs.mobilityProfile || (needs.wheelchairMode ? "wheelchair" : "custom");
-  ["avoidStairs", "requireCurb", "preferSmooth", "requireElevator", "preferShade", "avoidRain", "minimizeTransfers"]
+  ["avoidStairs", "requireCurb", "requireVerifiedCurbAccess", "preferSmooth", "requireElevator", "preferShade", "preferWellLit", "avoidRain", "minimizeTransfers"]
     .forEach(key => { els[key].checked = Boolean(needs[key]); });
   els.maxSlope.value = needs.maxSlope;
   els.maxWalkMinutes.value = needs.maxWalkMinutes;
@@ -1988,9 +2071,12 @@ function saveDefaultNeeds(event) {
       avoidStairs: els.avoidStairs.checked,
       requireCurb: els.requireCurb.checked,
       curbPolicy: els.requireCurb.checked ? "preffered" : mobilityProfile === "custom" ? "allowUnknown" : "preferred",
+      curbPolicy: els.requireCurb.checked ? "required" : mobilityProfile === "custom" ? "allowUnknown" : "preferred",
+      requireVerifiedCurbAccess: els.requireVerifiedCurbAccess.checked,
       preferSmooth: els.preferSmooth.checked,
       requireElevator: els.requireElevator.checked,
       preferShade: els.preferShade.checked,
+      preferWellLit: els.preferWellLit.checked,
       avoidRain: els.avoidRain.checked,
       minimizeTransfers: els.minimizeTransfers.checked,
       maxSlope: Number(els.maxSlope.value),
@@ -2011,7 +2097,7 @@ function saveDefaultNeeds(event) {
 
 function applySelectedMobilityPreset() {
   const needs = applyMobilityPreset(els.mobilityProfile.value, state.profile.needs);
-  ["avoidStairs", "requireCurb", "preferSmooth", "requireElevator", "preferShade", "avoidRain", "minimizeTransfers"]
+  ["avoidStairs", "requireCurb", "requireVerifiedCurbAccess", "preferSmooth", "requireElevator", "preferShade", "preferWellLit", "avoidRain", "minimizeTransfers"]
     .forEach(key => { els[key].checked = Boolean(needs[key]); });
   els.maxSlope.value = needs.maxSlope;
   els.maxWalkMinutes.value = needs.maxWalkMinutes;

@@ -13,3 +13,10 @@ otp-data/
 # macOS files
 .DS_Store
 __MACOSX/
+.git/
+.DS_Store
+__MACOSX/
+.env
+.env.*
+!.env.example
+*.zip

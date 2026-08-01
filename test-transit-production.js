@@ -83,7 +83,7 @@ const mixedStops = prepareTransitStops(fallbackNodes, [
 ]);
 const mixedEdges = [
   edge("mixed-bus", "mixed-entry", "mixed-bus", "bus", "M8", 1, 2),
-  transfer("station-transfer", "mixed-bus", "mixed-subway"),
+  transfer("station-transfer", "mixed-bus", "mixed-subway", fallbackNodes.astor.coordinates, fallbackNodes.laf8.coordinates),
   edge("mixed-subway", "mixed-subway", "mixed-exit", "subway", "F", 1, 2)
 ];
 const mixed = planTransitRoutes({
@@ -143,7 +143,7 @@ const busFerry = planTransitRoutes({
   transitStops: busFerryStops,
   transitEdges: [
     edge("bf-bus", "bf-entry", "bf-transfer-bus", "bus", "M20", 1, 2),
-    transfer("bf-transfer", "bf-transfer-bus", "bf-transfer-ferry"),
+    transfer("bf-transfer", "bf-transfer-bus", "bf-transfer-ferry", fallbackNodes.astor.coordinates, fallbackNodes.laf8.coordinates),
     { ...edge("bf-ferry", "bf-transfer-ferry", "bf-exit", "ferry", "battery-liberty", 1, 2), operator: "Statue City Cruises" }
   ]
 });
@@ -211,6 +211,25 @@ const invalidContinuity = validateTransitItinerary({
 }, { mode: "bus", needs, stopMap });
 assert.equal(invalidContinuity.valid, false);
 assert.ok(invalidContinuity.reasons.includes("transit edges are disconnected"));
+const duplicatedTransfer = transfer(
+  "duplicate-a",
+  "mixed-bus",
+  "mixed-subway",
+  fallbackNodes.astor.coordinates,
+  fallbackNodes.laf8.coordinates
+);
+const duplicateLogical = validateTransitItinerary({
+  entryStop: mixedStops[1],
+  exitStop: mixedStops[2],
+  transit: {
+    edges: [
+      duplicatedTransfer,
+      { ...duplicatedTransfer, id: "duplicate-b" }
+    ]
+  }
+}, { mode: "mixed", needs, stopMap: new Map(mixedStops.map(item => [item.id, item])) });
+assert.equal(duplicateLogical.valid, false);
+assert.ok(duplicateLogical.reasons.includes("transit edge is logically duplicated"));
 
 console.log("Production transit-algorithm behavior tests passed.");
 
@@ -226,6 +245,8 @@ function stop(id, name, nodeId, modes, wheelchairAccessible) {
     curbAccess: true,
     elevatorStatus: subway ? "working" : null,
     platformStopId,
+    entranceId: subway ? `mta:subway:entrance:${id}` : null,
+    boardingLocationType: subway ? "street_entrance" : null,
     directionId: subway ? "south" : null,
     accessiblePaths: subway ? [{
       id: `mta:subway:path:${id}`,
@@ -267,7 +288,7 @@ function edge(id, from, to, mode, route, fromSequence, toSequence) {
   };
 }
 
-function transfer(id, from, to) {
+function transfer(id, from, to, fromCoordinates, toCoordinates) {
   return {
     id,
     from,
@@ -281,6 +302,6 @@ function transfer(id, from, to) {
     geometryVerified: true,
     accessiblePathComplete: true,
     minimumTransferSeconds: 120,
-    geometry: [[-73.99, 40.73], [-73.989, 40.731]]
+    geometry: [fromCoordinates, toCoordinates]
   };
 }

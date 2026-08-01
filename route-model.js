@@ -95,6 +95,7 @@ export function normalizeRouteOption(input = {}, validation = {}) {
   if (rawLegs.length !== legs.length) return null;
   const inferredMode = inferRouteMode(legs);
   const totals = calculateRouteTotals(legs);
+  const endpointConnections = normalizeEndpointConnections(input.endpointConnections);
   const route = {
     id: String(input.id || input.key || `route-${Math.random().toString(36).slice(2, 9)}`),
     mode: inferredMode,
@@ -109,8 +110,12 @@ export function normalizeRouteOption(input = {}, validation = {}) {
     distanceMeters: totals.distanceMeters,
     accessibility: input.accessibility && typeof input.accessibility === "object" ? input.accessibility : {},
     trust: input.trust && typeof input.trust === "object" ? input.trust : { confidence: .45, unknownSegments: 0, reviewedPercent: 0 },
-    warnings: [...new Set(asStringList(input.warnings || input.reasons))],
-    dataSource: String(input.dataSource || "Unknown route source"),
+    warnings: [...new Set([
+      ...asStringList(input.warnings || input.reasons),
+      ...endpointConnectionWarnings(endpointConnections)
+    ])],
+    dataSource: safeDataSource(input.dataSource),
+    endpointConnections,
     dataVersion: input.dataVersion == null ? null : String(input.dataVersion),
     serviceAlertVersion: input.serviceAlertVersion == null ? null : String(input.serviceAlertVersion),
     elevatorStatusVersion: input.elevatorStatusVersion == null ? null : String(input.elevatorStatusVersion),
@@ -136,6 +141,7 @@ export function validateRouteOption(route, options = {}) {
   if (!VALID_ROUTE_MODES.has(route?.mode)) reasons.push("unknown route mode");
   if (!legs.length) reasons.push("route has no valid legs");
   const ids = new Set();
+  const logicalLegs = new Set();
   for (const leg of legs) {
     if (!VALID_LEG_MODES.has(leg.mode)) reasons.push(`invalid leg mode: ${leg.mode}`);
     if (ids.has(leg.id)) reasons.push("route contains a duplicated leg");
@@ -146,6 +152,9 @@ export function validateRouteOption(route, options = {}) {
       reasons.push(`leg ${leg.id} has invalid coordinates`);
       continue;
     }
+    const logicalLeg = `${leg.mode}:${from.id}:${to.id}:${leg.routeId || ""}`;
+    if (logicalLegs.has(logicalLeg)) reasons.push("route contains a logically duplicated leg");
+    logicalLegs.add(logicalLeg);
     if (!Number.isFinite(Number(leg.durationSeconds)) || !Number.isFinite(Number(leg.distanceMeters)) || !Number.isFinite(Number(leg.waitSeconds || 0)) || Number(leg.durationSeconds) < 0 || Number(leg.distanceMeters) < 0 || Number(leg.waitSeconds || 0) < 0) reasons.push(`leg ${leg.id} has an invalid duration, distance, or wait`);
     if (leg.geometry && !lineGeometry(leg.geometry)) reasons.push(`leg ${leg.id} has invalid geometry`);
     if (leg.geometry) {
@@ -166,8 +175,10 @@ export function validateRouteOption(route, options = {}) {
     const currentFrom = place(legs[index]?.from);
     if (!previousTo || !currentFrom || haversineMeters(previousTo.coordinates, currentFrom.coordinates) > connectionLimit) reasons.push("route legs are disconnected");
   }
-  if (requestedStart && legs[0] && haversineMeters(requestedStart.coordinates, legs[0].from.coordinates) > endpointLimit) reasons.push("first leg is too far from the selected start");
-  if (requestedEnd && legs.at(-1) && haversineMeters(requestedEnd.coordinates, legs.at(-1).to.coordinates) > endpointLimit) reasons.push("last leg is too far from the selected destination");
+  const validatedStart = endpointValidationCoordinate(route?.endpointConnections?.start, requestedStart, "start", reasons);
+  const validatedEnd = endpointValidationCoordinate(route?.endpointConnections?.end, requestedEnd, "end", reasons);
+  if (validatedStart && legs[0] && haversineMeters(validatedStart, legs[0].from.coordinates) > endpointLimit) reasons.push("first leg is too far from the selected start access point");
+  if (validatedEnd && legs.at(-1) && haversineMeters(validatedEnd, legs.at(-1).to.coordinates) > endpointLimit) reasons.push("last leg is too far from the selected destination access point");
   const transit = transitLegs(route);
   if (["bus", "subway", "ferry", "mixed"].includes(route?.mode) && !transit.length) reasons.push("transit route has no transit legs");
   if (route?.mode === "bus" && transit.some(leg => leg.mode !== "bus")) reasons.push("bus route contains a non-bus transit leg");
@@ -185,7 +196,7 @@ export function validateRouteOption(route, options = {}) {
   if (transit.length && route?.dataFreshness !== "current") reasons.push("transit route data is not current");
   if (transit.length && !Number.isFinite(Date.parse(route?.updatedAt))) reasons.push("transit route has no valid source timestamp");
   if (transit.length && !Number.isFinite(Date.parse(route?.expiresAt))) reasons.push("transit route has no expiration timestamp");
-  if (needs.requireElevator) {
+  if (needs.requireElevator || needs.wheelchairMode || needs.avoidStairs) {
     for (const leg of transit.filter(item => item.mode === "subway")) {
       const paths = [leg.accessibility?.boardingPath, leg.accessibility?.exitPath].filter(Boolean);
       if (paths.length !== 2 || paths.some(path => !completeCurrentAccessiblePath(path))) {
@@ -233,7 +244,8 @@ export function normalizeWalkingRoute(item, context = {}) {
     accessibility: item?.metrics || {},
     trust: context.trust || {},
     warnings: item?.reasons || [],
-    dataSource: context.dataSource || "OpenStreetMap via Overpass API"
+    dataSource: context.dataSource || "OpenStreetMap via Overpass API",
+    endpointConnections: context.endpointConnections
   }, { start: context.start, end: context.end });
 }
 
@@ -273,8 +285,11 @@ export function normalizeLocalTransitRoute(itinerary, context = {}) {
       tripId: edge.tripId || undefined,
       directionId: edge.directionId || undefined,
       headsign: edge.headsign || edge.direction || undefined,
-      durationSeconds: Math.round(nonNegative(edge.minutes) * 60),
+      durationSeconds: Math.round(edge.mode === "transfer"
+        ? Math.max(nonNegative(edge.minutes) * 60, nonNegative(edge.minimumTransferSeconds))
+        : nonNegative(edge.minutes) * 60),
       distanceMeters: nonNegative(edge.distanceMeters),
+      waitSeconds: Number.isFinite(Number(edge.scheduledWaitSeconds)) ? Math.max(0, Number(edge.scheduledWaitSeconds)) : 0,
       geometry: rawGeometry,
       accessibility: {
         ...(edge.accessibility && typeof edge.accessibility === "object" ? edge.accessibility : {}),
@@ -291,11 +306,21 @@ export function normalizeLocalTransitRoute(itinerary, context = {}) {
       securityScreeningRequired: edge.securityScreeningRequired === true,
       scheduleSource: edge.scheduleSource || undefined,
       scheduleUpdatedAt: edge.scheduleUpdatedAt || undefined,
+      scheduleStatus: edge.scheduleVerified === true ? "verified" : "unknown",
+      scheduleFreshness: edge.scheduleFreshness,
       waitSource: edge.waitSource || undefined,
       scheduledWaitSeconds: Number.isFinite(Number(edge.scheduledWaitSeconds)) ? Number(edge.scheduledWaitSeconds) : undefined
     };
   }).filter(leg => place(leg.from) && place(leg.to));
-  const legs = [...walkingLegs(itinerary?.access?.route, "access"), ...transit, ...walkingLegs(itinerary?.egress?.route, "egress")];
+  const accessConnector = connectorLeg(itinerary?.entryStop, "access", true);
+  const egressConnector = connectorLeg(itinerary?.exitStop, "egress", false);
+  const legs = applyScheduledTimeline([
+    ...walkingLegs(itinerary?.access?.route, "access"),
+    ...(accessConnector ? [accessConnector] : []),
+    ...transit,
+    ...(egressConnector ? [egressConnector] : []),
+    ...walkingLegs(itinerary?.egress?.route, "egress")
+  ], itinerary?.departureTime || context.departureTime);
   const route = normalizeRouteOption({
     id: itinerary?.key,
     mode: context.mode,
@@ -307,12 +332,12 @@ export function normalizeLocalTransitRoute(itinerary, context = {}) {
       ...(transit.some(leg => VEHICLE_MODES.has(leg.mode) && !leg.geometry) ? ["Detailed transit map geometry is unavailable for one or more legs."] : []),
       ...(itinerary?.warnings || [])
     ],
+    endpointConnections: context.endpointConnections,
     dataSource: context.dataSource || "Provider-derived transit topology",
     dataVersion: context.dataVersion,
     serviceAlertVersion: context.serviceAlertVersion,
     elevatorStatusVersion: context.elevatorStatusVersion,
-    providerUpdatedAt: context.providerUpdatedAt
-    ,
+    providerUpdatedAt: context.providerUpdatedAt,
     dataFreshness: context.dataFreshness,
     updatedAt: context.updatedAt || context.providerUpdatedAt,
     expiresAt: context.expiresAt
@@ -426,6 +451,107 @@ function completeCurrentAccessiblePath(path) {
     && Number.isFinite(Date.parse(path.updatedAt));
 }
 
+function connectorLeg(stop, prefix, reverse) {
+  const connector = stop?.accessConnector || stop;
+  const distanceMeters = Number(connector?.connectorDistanceMeters || 0);
+  if (distanceMeters <= 1) return null;
+  const geometry = lineGeometry(connector?.connectorGeometry);
+  if (!geometry || !["verified", "estimated"].includes(connector?.connectorStatus)) return null;
+  const oriented = reverse
+    ? { ...geometry, coordinates: [...geometry.coordinates].reverse() }
+    : geometry;
+  const fromCoordinates = oriented.coordinates[0];
+  const toCoordinates = oriented.coordinates.at(-1);
+  return {
+    id: `${prefix}-connector-${stop.id}`,
+    mode: "walk",
+    from: {
+      id: reverse ? connector.pedestrianNodeId : stop.id,
+      name: reverse ? "Pedestrian access point" : stop.name,
+      coordinates: fromCoordinates
+    },
+    to: {
+      id: reverse ? stop.id : connector.pedestrianNodeId,
+      name: reverse ? stop.name : "Pedestrian access point",
+      coordinates: toCoordinates
+    },
+    durationSeconds: Math.ceil(distanceMeters / 1.15),
+    distanceMeters,
+    geometry: oriented,
+    geometryVerified: true,
+    accessibility: {
+      geometryVerified: true,
+      connectorStatus: connector.connectorStatus,
+      connectorSource: connector.connectorSource || "Transit topology provider"
+    },
+    streetName: "transit access path"
+  };
+}
+
+function normalizeEndpointConnections(value) {
+  if (!value || typeof value !== "object") return {};
+  return Object.fromEntries(["start", "end"].map(key => {
+    const item = value[key];
+    const selectedCoordinates = coordinate(item?.selectedCoordinates);
+    const accessPointCoordinates = coordinate(item?.accessPointCoordinates);
+    const connectorGeometry = item?.connectorGeometry == null ? null : lineGeometry(item.connectorGeometry);
+    const connectorStatus = ["verified", "estimated", "too_far", "unavailable"].includes(item?.connectorStatus)
+      ? item.connectorStatus
+      : "unavailable";
+    return [key, {
+      selectedCoordinates,
+      accessPointCoordinates,
+      connectorGeometry,
+      connectorDistanceMeters: nonNegative(item?.connectorDistanceMeters),
+      connectorSource: item?.connectorSource == null ? null : String(item.connectorSource),
+      connectorStatus
+    }];
+  }).filter(([, item]) => item.selectedCoordinates || item.accessPointCoordinates));
+}
+
+function applyScheduledTimeline(legs, departureTime) {
+  let cursor = Date.parse(departureTime);
+  if (!Number.isFinite(cursor)) return legs;
+  return legs.map(leg => {
+    const departure = cursor + nonNegative(leg.waitSeconds) * 1000;
+    const arrival = departure + nonNegative(leg.durationSeconds) * 1000;
+    cursor = arrival;
+    return {
+      ...leg,
+      departureTime: new Date(departure).toISOString(),
+      arrivalTime: new Date(arrival).toISOString()
+    };
+  });
+}
+
+function endpointValidationCoordinate(connection, selected, label, reasons) {
+  if (!connection) return selected?.coordinates || null;
+  if (!["verified", "estimated"].includes(connection.connectorStatus) || !connection.accessPointCoordinates) {
+    reasons.push(`${label} endpoint connector is unavailable`);
+    return null;
+  }
+  if (connection.selectedCoordinates && selected
+    && haversineMeters(connection.selectedCoordinates, selected.coordinates) > 2) {
+    reasons.push(`${label} endpoint connector does not preserve the selected location`);
+  }
+  if (connection.connectorGeometry) {
+    const geometry = lineGeometry(connection.connectorGeometry);
+    const accessDistance = Math.min(
+      haversineMeters(connection.accessPointCoordinates, geometry.coordinates[0]),
+      haversineMeters(connection.accessPointCoordinates, geometry.coordinates.at(-1))
+    );
+    if (accessDistance > 10) reasons.push(`${label} endpoint connector geometry misses its access point`);
+  }
+  return connection.accessPointCoordinates;
+}
+
+function endpointConnectionWarnings(connections) {
+  if (!connections || typeof connections !== "object") return [];
+  return Object.values(connections).some(connection => connection?.connectorStatus === "estimated")
+    ? ["A mapped nearby access point is used, but the internal path from the selected place could not be verified."]
+    : [];
+}
+
 function asStringList(value) {
   const values = Array.isArray(value) ? value : value == null ? [] : [value];
   return values.map(String).filter(Boolean);
@@ -439,4 +565,11 @@ function orientedLineGeometry(value, reverse) {
 
 function defaultLabel(mode) {
   return ({ walk: "Accessible walking route", bus: "Accessible bus route", subway: "Accessible subway route", ferry: "Accessible ferry route", mixed: "Accessible mixed transit" })[mode] || "Accessible route";
+}
+
+function safeDataSource(value) {
+  return String(value || "Unknown route source")
+    .replace(/https?:\/\/\S+/gi, "provider endpoint")
+    .replace(/\bVITE_[A-Z0-9_]+\b/g, "configured provider")
+    .slice(0, 120);
 }

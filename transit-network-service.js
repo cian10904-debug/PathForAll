@@ -1,6 +1,6 @@
 "use strict";
 
-import { coordinate } from "./route-model.js";
+import { coordinate, lineGeometry } from "./route-model.js";
 import { normalizeStationAccessibility } from "./elevator-status.js";
 import { TransitProviderError } from "./transit-errors.js";
 import { fetchWithPolicy } from "./fetch-client.js";
@@ -111,7 +111,7 @@ export function normalizeTransitNetwork(payload = {}, options = {}) {
   return {
     stops,
     edges,
-    dataSource: String(payload.dataSource || "Transit network provider"),
+    dataSource: safeSource(payload.dataSource),
     updatedAt,
     freshness: dataFreshness(payload.freshness, updatedAt, payload.maxAgeSeconds, options.now),
     expiresAt: validTimestamp(payload.expiresAt) || expirationTimestamp(updatedAt, payload.maxAgeSeconds),
@@ -120,6 +120,7 @@ export function normalizeTransitNetwork(payload = {}, options = {}) {
     elevatorStatusVersion: nullableString(payload.elevatorStatusVersion),
     capabilities: normalizeCapabilities(payload.capabilities),
     maxSnapDistanceMeters: finitePositive(payload.maxSnapDistanceMeters) || 140,
+    maxConnectorDistanceMeters: finitePositive(payload.maxConnectorDistanceMeters) || 220,
     candidateSearch: normalizeCandidateSearch(payload.candidateSearch)
   };
 }
@@ -139,7 +140,7 @@ export function normalizeTransitIdentifier(value, { agency = "mta", mode = "tran
 
 export function isAllowedTransitIdentifier(value) {
   const text = String(value || "");
-  return /^mta:(bus|subway):(stop|station|platform|complex|entrance|edge|path|transfer):[^:\s]+(?:[:][^:\s]+)*$/.test(text)
+  return /^mta:(bus|subway):(stop|station|platform|complex|entrance|fare-control|edge|path|transfer):[^:\s]+(?:[:][^:\s]+)*$/.test(text)
     || /^statue-city-cruises:(terminal|dock|edge|route|stop|path):[^:\s]+(?:[:][^:\s]+)*$/.test(text);
 }
 
@@ -162,6 +163,11 @@ function normalizeStop(stop, payload, options) {
     parentStationId: stop.parentStationId ? normalizeTransitIdentifier(stop.parentStationId, { agency, mode: primaryMode, kind: "station" }) : null,
     platformStopId: stop.platformStopId ? normalizeTransitIdentifier(stop.platformStopId, { agency, mode: primaryMode, kind: "platform" }) : null,
     stationComplexId: stop.stationComplexId ? normalizeTransitIdentifier(stop.stationComplexId, { agency, mode: primaryMode, kind: "complex" }) : null,
+    entranceId: stop.entranceId ? normalizeTransitIdentifier(stop.entranceId, { agency, mode: primaryMode, kind: "entrance" }) : null,
+    accessiblePaths: normalizeProviderAccessiblePaths(stop.accessiblePaths, agency, primaryMode),
+    curbAccess: normalizeCurbAccess(stop.curbAccess),
+    boardingLocationType: subwayLocationType(stop, primaryMode),
+    pedestrianConnector: normalizePedestrianConnector(stop.pedestrianConnector || stop.accessConnector, coordinates),
     terminalId: stop.terminalId ? normalizeTransitIdentifier(stop.terminalId, { agency, mode: "ferry", kind: "terminal" }) : null,
     dockId: stop.dockId ? normalizeTransitIdentifier(stop.dockId, { agency, mode: "ferry", kind: "dock" }) : null
   }, payload.elevatorRecords || [], {
@@ -170,6 +176,65 @@ function normalizeStop(stop, payload, options) {
     maxAgeSeconds: payload.elevatorMaxAgeSeconds
   });
   return normalized;
+}
+
+function normalizeCurbAccess(value) {
+  if (value === true || String(value).toLowerCase() === "true") return true;
+  if (value === false || String(value).toLowerCase() === "false") return false;
+  return "unknown";
+}
+
+function subwayLocationType(stop, mode) {
+  if (mode !== "subway") return null;
+  const explicit = String(stop.boardingLocationType || stop.locationType || stop.stopType || "").toLowerCase();
+  if (["street_entrance", "entrance"].includes(explicit)) return "street_entrance";
+  if (["directional_platform", "platform"].includes(explicit)) return "directional_platform";
+  if (["parent_station", "station", "station_complex"].includes(explicit)) return "parent_station";
+  return stop.entranceId && stop.platformStopId ? "street_entrance" : "parent_station";
+}
+
+function normalizePedestrianConnector(value, stopCoordinates) {
+  if (!value || typeof value !== "object") return null;
+  const geometry = lineGeometry(value.connectorGeometry || value.geometry);
+  const status = ["verified", "estimated", "too_far", "unavailable"].includes(value.connectorStatus || value.status)
+    ? value.connectorStatus || value.status
+    : "unavailable";
+  if (!geometry || !["verified", "estimated"].includes(status)) return null;
+  const first = geometry.coordinates[0];
+  const last = geometry.coordinates.at(-1);
+  const directOrder = coordinateNear(first, stopCoordinates);
+  const reverseOrder = coordinateNear(last, stopCoordinates);
+  if (!directOrder && !reverseOrder) return null;
+  const orientedGeometry = directOrder
+    ? geometry
+    : { ...geometry, coordinates: [...geometry.coordinates].reverse() };
+  return {
+    originalCoordinates: [...stopCoordinates],
+    pedestrianNodeId: value.pedestrianNodeId == null ? null : String(value.pedestrianNodeId),
+    snapDistanceMeters: finiteNonNegative(value.snapDistanceMeters),
+    connectorGeometry: orientedGeometry,
+    connectorDistanceMeters: finiteNonNegative(value.connectorDistanceMeters),
+    connectorStatus: status,
+    connectorSource: String(value.connectorSource || value.source || "Transit topology provider")
+  };
+}
+
+function coordinateNear(a, b, tolerance = .0002) {
+  return coordinate(a) && coordinate(b)
+    && Math.abs(a[0] - b[0]) <= tolerance
+    && Math.abs(a[1] - b[1]) <= tolerance;
+}
+
+function finiteNonNegative(value) {
+  const number = Number(value);
+  return Number.isFinite(number) && number >= 0 ? number : null;
+}
+
+function safeSource(value) {
+  return String(value || "Transit network provider")
+    .replace(/https?:\/\/\S+/gi, "provider endpoint")
+    .replace(/\bVITE_[A-Z0-9_]+\b/g, "configured provider")
+    .slice(0, 120);
 }
 
 function normalizeEdge(edge, stopIds, payload) {
@@ -221,8 +286,35 @@ function normalizeEdge(edge, stopIds, payload) {
     departures: Array.isArray(edge.departures) ? edge.departures.map(validTimestamp).filter(Boolean) : [],
     frequency: normalizeFrequency(edge.frequency),
     minimumTransferSeconds: edge.mode === "transfer" ? Number(edge.minimumTransferSeconds) : undefined,
-    providerConfirmed: edge.providerConfirmed === true
+    providerConfirmed: edge.providerConfirmed === true,
+    fromPlatformStopId: edge.fromPlatformStopId
+      ? normalizeTransitIdentifier(edge.fromPlatformStopId, { agency: fromAgency, mode: fromMode, kind: "platform" })
+      : undefined,
+    toPlatformStopId: edge.toPlatformStopId
+      ? normalizeTransitIdentifier(edge.toPlatformStopId, { agency: toAgency, mode: toMode, kind: "platform" })
+      : undefined,
+    directionId: edge.directionId == null ? undefined : String(edge.directionId)
   };
+}
+
+function normalizeProviderAccessiblePaths(values, agency, mode) {
+  if (!Array.isArray(values) || mode !== "subway") return [];
+  return values.map(path => ({
+    ...path,
+    entranceId: path.entranceId
+      ? normalizeTransitIdentifier(path.entranceId, { agency, mode, kind: "entrance" })
+      : null,
+    fareControlAreaId: path.fareControlAreaId
+      ? normalizeTransitIdentifier(path.fareControlAreaId, { agency, mode, kind: "fare-control" })
+      : null,
+    platformStopIds: (Array.isArray(path.platformStopIds) ? path.platformStopIds : [path.platformStopId])
+      .filter(Boolean)
+      .map(value => normalizeTransitIdentifier(value, { agency, mode, kind: "platform" }))
+      .filter(Boolean),
+    directionIds: (Array.isArray(path.directionIds) ? path.directionIds : [path.directionId])
+      .filter(Boolean)
+      .map(String)
+  }));
 }
 
 function resolveStopIdentity(stopIds, value, agency, mode) {

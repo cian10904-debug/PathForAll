@@ -1,10 +1,10 @@
 "use strict";
 
-import { coordinate } from "./route-model.js";
+import { coordinate, lineGeometry } from "./route-model.js";
 import { appStorage } from "./storage-adapter.js";
 
 const SAVED_KEY = "pathforall-saved-v1";
-const SAVED_SCHEMA_VERSION = 2;
+const SAVED_SCHEMA_VERSION = 3;
 
 export function loadSavedRoutes() {
   const value = appStorage.readJson(SAVED_KEY, [], { version: SAVED_SCHEMA_VERSION });
@@ -16,6 +16,7 @@ export function saveRoute(route, startPlace, endPlace) {
   const saved = loadSavedRoutes();
   const routeId = String(route.id || route.key || "route");
   const durationSeconds = nonNegative(route.totalDurationSeconds, legacyMinutes(route) * 60);
+  const legs = Array.isArray(route.legs) ? route.legs.map(serializeLeg).filter(Boolean) : [];
   const record = {
     id: `${routeId}-${Date.now()}`,
     routeId,
@@ -24,9 +25,15 @@ export function saveRoute(route, startPlace, endPlace) {
     mode: validMode(route.mode),
     label: String(route.label || route.optionLabel || "Accessible route").slice(0, 80),
     durationSeconds,
+    totalDurationSeconds: durationSeconds,
+    totalWalkingMeters: nonNegative(route.totalWalkingMeters),
     totalWaitSeconds: nonNegative(route.totalWaitSeconds),
+    transfers: nonNegative(route.transfers),
     minutes: Math.round(durationSeconds / 60),
     distanceMeters: nonNegative(route.distanceMeters),
+    legs,
+    accessibility: objectValue(route.accessibility),
+    trust: objectValue(route.trust),
     dataSource: String(route.dataSource || "Unknown route source").slice(0, 120),
     warnings: stringList(route.warnings),
     start: serializePlace(startPlace),
@@ -76,10 +83,16 @@ function normalizeSavedRoute(value) {
     mode: validMode(value.mode),
     label: String(value.label || "Accessible route").slice(0, 80),
     durationSeconds,
+    totalDurationSeconds: durationSeconds,
+    totalWalkingMeters: nonNegative(value.totalWalkingMeters),
     totalWaitSeconds: nonNegative(value.totalWaitSeconds),
+    transfers: nonNegative(value.transfers),
     // Kept for display compatibility while all new saves use seconds as source data.
     minutes: Math.round(durationSeconds / 60),
     distanceMeters: nonNegative(value.distanceMeters),
+    legs: Array.isArray(value.legs) ? value.legs.map(serializeLeg).filter(Boolean) : [],
+    accessibility: objectValue(value.accessibility),
+    trust: objectValue(value.trust),
     dataSource: String(value.dataSource || "Unknown route source").slice(0, 120),
     warnings: stringList(value.warnings),
     start,
@@ -108,4 +121,43 @@ function stringList(value) {
 
 function validSavedAt(value) {
   return Number.isFinite(Date.parse(value)) ? new Date(value).toISOString() : new Date().toISOString();
+}
+
+function serializeLeg(value) {
+  if (!value || !["walk", "bus", "subway", "ferry", "transfer"].includes(value.mode)) return null;
+  const from = serializePlace(value.from);
+  const to = serializePlace(value.to);
+  if (!from.coordinates.length || !to.coordinates.length) return null;
+  const geometry = value.geometry == null ? null : lineGeometry(value.geometry);
+  if (value.geometry != null && !geometry) return null;
+  return {
+    id: String(value.id || "saved-leg"),
+    mode: value.mode,
+    from,
+    to,
+    routeId: nullableString(value.routeId),
+    routeName: nullableString(value.routeName),
+    headsign: nullableString(value.headsign),
+    durationSeconds: nonNegative(value.durationSeconds),
+    distanceMeters: nonNegative(value.distanceMeters),
+    waitSeconds: nonNegative(value.waitSeconds),
+    departureTime: validOptionalTimestamp(value.departureTime),
+    arrivalTime: validOptionalTimestamp(value.arrivalTime),
+    geometry,
+    accessibility: objectValue(value.accessibility)
+  };
+}
+
+function objectValue(value) {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? JSON.parse(JSON.stringify(value))
+    : {};
+}
+
+function nullableString(value) {
+  return value == null || value === "" ? null : String(value).slice(0, 120);
+}
+
+function validOptionalTimestamp(value) {
+  return Number.isFinite(Date.parse(value)) ? new Date(value).toISOString() : null;
 }
