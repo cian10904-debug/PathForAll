@@ -598,6 +598,7 @@ async function loadStreetNetwork(corridor, options = {}) {
       state.startPlace,
       state.endPlace,
       {
+        maxProjectionDistanceMeters: 40,
         maxProjectionDistanceMeters: 3,
         maxAccessPointDistanceMeters: 160,
         accessPoints: live.accessPoints,
@@ -647,7 +648,7 @@ function snapEndpoint(type, forcedId = null, options = {}) {
   if (!state.networkReady) return;
   const place = type === "start" ? state.startPlace : state.endPlace;
   if (!place) return;
-  const nearest = forcedId ? { node: state.nodes[forcedId], distanceMeters: 0 } : findNearestNode(state.nodes, place.coordinates, 2);
+  const nearest = forcedId ? { node: state.nodes[forcedId], distanceMeters: 0 } : findNearestNode(state.nodes, place.coordinates, 40);
   if (!nearest?.node) {
     if (!options.silent) setPlannerMessage(`Could not connect ${type} to the pedestrian graph.`, "warning");
     if (type === "start") state.startId = null;
@@ -2069,6 +2070,7 @@ function saveDefaultNeeds(event) {
           : false,
       avoidStairs: els.avoidStairs.checked,
       requireCurb: els.requireCurb.checked,
+      curbPolicy: els.requireCurb.checked ? "preffered" : mobilityProfile === "custom" ? "allowUnknown" : "preferred",
       curbPolicy: els.requireCurb.checked ? "required" : mobilityProfile === "custom" ? "allowUnknown" : "preferred",
       requireVerifiedCurbAccess: els.requireVerifiedCurbAccess.checked,
       preferSmooth: els.preferSmooth.checked,

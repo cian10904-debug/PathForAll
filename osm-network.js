@@ -490,6 +490,8 @@ function attachEndpoint(graph, place, endpointType, options) {
     };
   }
 
+  const splitPoint = [...best.coordinate];
+  const nodeId =`selected-${endpointType}-${coordinateKey(splitPoint)}`;
   const accessCoordinates = accessPoint?.coordinates || best.coordinate;
   const nodeId = `selected-${endpointType}-${coordinateKey(accessCoordinates)}`;
   const splitPoint = [...best.coordinate];
@@ -547,6 +549,9 @@ function attachEndpoint(graph, place, endpointType, options) {
     connector: endpointConnection(place, splitPoint, {
       endpointType,
       edgeId: best.edge.id,
+      distanceMeters: best.distanceMeters,
+      selectionOffsetMeters: best.distanceMeters,
+      evidence: "OpenStreetMap pedestrian edge"
       connectorGeometry: accessPoint?.connectorGeometry || null,
       connectorDistanceMeters: accessPoint
         ? haversineMeters(coordinates, accessCoordinates)
