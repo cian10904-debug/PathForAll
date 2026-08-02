@@ -17,6 +17,9 @@ const SUPPORTED_MODES = new Set([
   "mixed"
 ]);
 
+const ELEVATOR_DATA_CONNECTED =
+  false;
+
 app.use(cors({
   origin: [
     "http://localhost:5173",
@@ -55,8 +58,11 @@ app.get("/api/capabilities", async (_request, response) => {
       available: true,
       modes: ["bus", "subway", "mixed"],
       realtimeArrivals: false,
-      elevatorStatus: false,
-      elevatorAccessibilityPaths: false,
+      elevatorStatus:
+        ELEVATOR_DATA_CONNECTED,
+
+      elevatorAccessibilityPaths:
+        ELEVATOR_DATA_CONNECTED,
       ferrySchedules: false,
       source: "Local OpenTripPlanner",
       checked: true,
@@ -85,10 +91,11 @@ app.get("/api/capabilities", async (_request, response) => {
 app.post("/api/routes", async (request, response) => {
   try {
     const {
-      start,
-      end,
-      needs = {},
-      mode
+        start,
+        end,
+        needs = {},
+        mode,
+        departureTime
     } = request.body || {};
 
     validateCoordinates(start, "start");
@@ -101,7 +108,16 @@ app.post("/api/routes", async (request, response) => {
       });
     }
 
-    const dateTime = new Date();
+    const parsedDepartureTime =
+        departureTime
+            ? Date.parse(departureTime)
+            : NaN;
+
+    const dateTime = new Date(
+        Number.isFinite(parsedDepartureTime)
+            ? parsedDepartureTime
+            : Date.now()
+    );
 
     const otpPayload = await requestOtpPlan({
       start,
@@ -115,14 +131,23 @@ app.post("/api/routes", async (request, response) => {
       otpPayload?.data?.plan?.itineraries || [];
 
     const routes = rawItineraries
-      .map((itinerary, index) =>
-        normalizeOtpItinerary(
-          itinerary,
-          index,
-          mode
-        )
-      )
-      .filter(Boolean);
+  .map(itinerary =>
+    normalizeOtpItinerary(
+      itinerary,
+      mode,
+      needs,
+      dateTime
+    )
+  )
+  .filter(Boolean)
+  .map((route, visibleIndex) => ({
+    ...route,
+    id: `otp-${mode}-${visibleIndex}`,
+    label: buildRouteLabel(
+      route,
+      visibleIndex
+    )
+  }));
 
     if (!routes.length) {
       return response.status(404).json({
@@ -159,6 +184,28 @@ app.post("/api/routes", async (request, response) => {
         "Transit routing is unavailable."
     });
   }
+  const requiresVerifiedSubwayAccess =
+  ["subway", "mixed"].includes(mode) &&
+  (
+    needs.wheelchairMode === true ||
+    needs.requireElevator === true ||
+    needs.avoidStairs === true
+  );
+
+if (
+  requiresVerifiedSubwayAccess &&
+  !ELEVATOR_DATA_CONNECTED
+) {
+  return response
+    .status(409)
+    .json({
+      code:
+        "ELEVATOR_DATA_UNAVAILABLE",
+
+      message:
+        "Subway wheelchair routing requires current elevator status and complete entrance-to-platform accessibility paths. These services are not connected yet. Use Bus or Walk, or turn off strict elevator requirements for a general scheduled Subway route."
+    });
+}
 });
 
 app.listen(PORT, () => {
@@ -319,23 +366,37 @@ async function requestOtpPlan({
 
 function normalizeOtpItinerary(
   itinerary,
-  index,
-  requestedMode
+  requestedMode,
+  needs,
+  requestedDepartureTime
 ) {
-  const legs = (itinerary.legs || [])
-    .map((leg, legIndex) =>
-      normalizeOtpLeg(leg, legIndex)
-    )
-    .filter(Boolean);
+  const normalizedLegs =
+    (itinerary.legs || [])
+      .map((leg, legIndex) =>
+        normalizeOtpLeg(
+          leg,
+          legIndex
+        )
+      )
+      .filter(Boolean);
 
-  if (!legs.length) return null;
+  if (!normalizedLegs.length) {
+    return null;
+  }
+
+  const legs = applyScheduledWaits(
+    normalizedLegs,
+    requestedDepartureTime
+  );
+
+  const transitLegs = legs.filter(
+    leg =>
+      ["bus", "subway", "ferry"]
+        .includes(leg.mode)
+  );
 
   const transitModes = new Set(
-    legs
-      .map(leg => leg.mode)
-      .filter(mode =>
-        ["bus", "subway", "ferry"].includes(mode)
-      )
+    transitLegs.map(leg => leg.mode)
   );
 
   if (
@@ -368,67 +429,156 @@ function normalizeOtpItinerary(
     return null;
   }
 
-  const unknownAccessibility = legs.some(
-    leg =>
-      leg.mode !== "walk" &&
-      leg.accessibility
-        .wheelchairAccessible === "unknown"
-  );
+  const hasKnownInaccessibleLeg =
+    transitLegs.some(
+      leg =>
+        leg.accessibility
+          ?.wheelchairAccessible === false
+    );
 
-  const distanceMeters = legs.reduce(
-    (sum, leg) =>
-      sum + Number(leg.distanceMeters || 0),
-    0
-  );
+  if (
+    needs?.wheelchairMode === true &&
+    hasKnownInaccessibleLeg
+  ) {
+    return null;
+  }
+
+  const unknownAccessibility =
+    transitLegs.some(
+      leg =>
+        leg.accessibility
+          ?.wheelchairAccessible ===
+        "unknown"
+    );
+
+  const hasSubway =
+    transitModes.has("subway");
+
+  const wheelchairAccessible =
+    hasKnownInaccessibleLeg
+      ? false
+      : (
+          unknownAccessibility ||
+          (
+            hasSubway &&
+            !ELEVATOR_DATA_CONNECTED
+          )
+        )
+        ? "unknown"
+        : true;
+
+  const totalWaitSeconds =
+    legs.reduce(
+      (sum, leg) =>
+        sum +
+        Number(leg.waitSeconds || 0),
+      0
+    );
+
+  const totalMovementSeconds =
+    legs.reduce(
+      (sum, leg) =>
+        sum +
+        Number(
+          leg.durationSeconds || 0
+        ),
+      0
+    );
+
+  const totalWalkingMeters =
+    legs
+      .filter(
+        leg =>
+          leg.mode === "walk" ||
+          leg.mode === "transfer"
+      )
+      .reduce(
+        (sum, leg) =>
+          sum +
+          Number(
+            leg.distanceMeters || 0
+          ),
+        0
+      );
+
+  const distanceMeters =
+    legs.reduce(
+      (sum, leg) =>
+        sum +
+        Number(
+          leg.distanceMeters || 0
+        ),
+      0
+    );
+
+  const accessibilityScore =
+    Number(
+      itinerary.accessibilityScore
+    );
+
+  const confidence =
+    Number.isFinite(
+      accessibilityScore
+    )
+      ? accessibilityScore
+      : 0.5;
+
+  const warnings = [];
+
+  if (unknownAccessibility) {
+    warnings.push(
+      "Some stop or vehicle accessibility data is unavailable."
+    );
+  }
+
+  if (
+    hasSubway &&
+    !ELEVATOR_DATA_CONNECTED
+  ) {
+    warnings.push(
+      "Live elevator status and complete entrance-to-platform accessibility paths are not connected."
+    );
+  }
 
   return {
-    id: `otp-${requestedMode}-${index}`,
     mode: requestedMode,
-    label:
-      index === 0
-        ? "Recommended accessible route"
-        : `Accessible alternative ${index + 1}`,
     legs,
+
     totalDurationSeconds:
-      Number(itinerary.duration || 0),
-    totalWalkingMeters:
-      Number(itinerary.walkDistance || 0),
-    totalWaitSeconds:
-      Number(itinerary.waitingTime || 0),
+      totalMovementSeconds +
+      totalWaitSeconds,
+
+    totalWalkingMeters,
+    totalWaitSeconds,
+
     transfers:
-      Number(itinerary.numberOfTransfers || 0),
+      Number(
+        itinerary.numberOfTransfers || 0
+      ),
+
     distanceMeters,
+
     accessibility: {
-      wheelchairAccessible:
-        unknownAccessibility
-          ? "unknown"
-          : true,
-      confidence:
-        Number.isFinite(
-          Number(itinerary.accessibilityScore)
-        )
-          ? Number(itinerary.accessibilityScore)
-          : 0.6
+      wheelchairAccessible,
+      confidence,
+
+      elevatorDataConnected:
+        !hasSubway ||
+        ELEVATOR_DATA_CONNECTED
     },
-    dataConfidence:
-      Number.isFinite(
-        Number(itinerary.accessibilityScore)
-      )
-        ? Number(itinerary.accessibilityScore)
-        : 0.6,
-    warnings: unknownAccessibility
-      ? [
-          "Some stop or vehicle accessibility data is unavailable."
-        ]
-      : [],
+
+    dataConfidence: confidence,
+    warnings,
+
     dataSource:
       "OpenTripPlanner with MTA GTFS",
+
     dataFreshness: "current",
-    updatedAt: new Date().toISOString()
+    updatedAt:
+      new Date().toISOString()
   };
 }
-
-function normalizeOtpLeg(leg, index) {
+    function normalizeOtpLeg(leg, index) {
   const mode = normalizeOtpMode(leg.mode);
 
   if (!mode) return null;
@@ -536,6 +686,130 @@ function normalizeOtpLeg(leg, index) {
         ? "realtime"
         : "scheduled"
   };
+}
+
+function buildRouteLabel(route, index) {
+  const prefix =
+    index === 0
+      ? "Recommended"
+      : `Alternative ${index + 1}`;
+
+  const status =
+    route.accessibility
+      ?.wheelchairAccessible;
+
+  if (status === true) {
+    return `${prefix} verified accessible route`;
+  }
+
+  if (status === false) {
+    return `${prefix} route · known accessibility barrier`;
+  }
+
+  return `${prefix} route · accessibility unverified`;
+}
+
+function applyScheduledWaits(
+  legs,
+  requestedDepartureTime
+) {
+  const requestedTime =
+    requestedDepartureTime
+      instanceof Date
+      ? requestedDepartureTime.getTime()
+      : Date.parse(
+          requestedDepartureTime
+        );
+
+  let clock = Number.isFinite(
+    requestedTime
+  )
+    ? requestedTime
+    : Date.now();
+
+  let pendingWaitSeconds = 0;
+
+  return legs.map(leg => {
+    const departureTime =
+      Date.parse(
+        leg.departureTime || ""
+      );
+
+    const arrivalTime =
+      Date.parse(
+        leg.arrivalTime || ""
+      );
+
+    if (
+      Number.isFinite(departureTime) &&
+      departureTime > clock
+    ) {
+      pendingWaitSeconds +=
+        Math.round(
+          (
+            departureTime -
+            clock
+          ) / 1000
+        );
+    }
+
+    const isTransit =
+      [
+        "bus",
+        "subway",
+        "ferry"
+      ].includes(leg.mode);
+
+    const waitSeconds =
+      isTransit
+        ? pendingWaitSeconds
+        : 0;
+
+    if (isTransit) {
+      pendingWaitSeconds = 0;
+    }
+
+    if (
+      Number.isFinite(arrivalTime)
+    ) {
+      clock = Math.max(
+        clock,
+        arrivalTime
+      );
+    } else if (
+      Number.isFinite(departureTime)
+    ) {
+      clock = Math.max(
+        clock,
+        departureTime +
+          Number(
+            leg.durationSeconds || 0
+          ) *
+          1000
+      );
+    } else {
+      clock +=
+        Number(
+          leg.durationSeconds || 0
+        ) *
+        1000;
+    }
+
+    return {
+      ...leg,
+      waitSeconds,
+
+      scheduledWaitSeconds:
+        waitSeconds > 0
+          ? waitSeconds
+          : undefined,
+
+      waitSource:
+        waitSeconds > 0
+          ? "scheduled"
+          : leg.waitSource
+    };
+  });
 }
 
 function otpTransportModes(mode) {

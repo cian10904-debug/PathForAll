@@ -8,8 +8,26 @@ export function routeCardViewModel(route) {
   const firstTransit = transit[0] || null;
   const lastTransit = transit.at(-1) || null;
   const isTransit = ["bus", "subway", "ferry", "mixed"].includes(route?.mode);
-  const elevatorAccessibility = transit.find(leg => leg.mode === "subway")?.accessibility || {};
-  const elevator = elevatorAccessibility.elevator?.status || elevatorAccessibility.elevatorStatus || "unknown";
+  const subwayLeg =
+  transit.find(
+    leg => leg.mode === "subway"
+  );
+
+const elevatorAccessibility =
+  subwayLeg?.accessibility || {};
+
+const elevator =
+  !subwayLeg
+    ? "Not required"
+    : route?.accessibility
+        ?.elevatorDataConnected ===
+      false
+      ? "Status not connected"
+      : elevatorAccessibility
+          .elevator?.status ||
+        elevatorAccessibility
+          .elevatorStatus ||
+        "Status unknown";
   const arrival = route?.arrivals;
   const ferry = transit.find(leg => leg.mode === "ferry");
   const arrivalBoardings = route?.boardings || arrival?.boardings || [];
@@ -24,6 +42,7 @@ export function routeCardViewModel(route) {
     type: isTransit ? "transit" : route?.mode === "walk" ? "walk" : "invalid",
     icon: route?.mode === "bus" ? "🚌" : route?.mode === "subway" ? "🚇" : route?.mode === "ferry" ? "⛴" : route?.mode === "mixed" ? "↔" : "🚶",
     durationMinutes: Math.max(0, Math.round(Number(route?.totalDurationSeconds || 0) / 60)),
+    waitMinutes: Math.max(0,Math.ceil(Number(route?.totalWaitSeconds || 0) / 60)),
     durationLabel: scheduleUnknown ? "Schedule required" : `${Math.max(0, Math.round(Number(route?.totalDurationSeconds || 0) / 60))} min`,
     walkingMinutes: Math.max(0, Math.round((route?.legs || []).filter(leg => leg.mode === "walk" || leg.mode === "transfer").reduce((sum, leg) => sum + Number(leg.durationSeconds || 0), 0) / 60)),
     transitMinutes: Math.max(0, Math.round(transit.reduce((sum, leg) => sum + Number(leg.durationSeconds || 0) + Number(leg.waitSeconds || 0), 0) / 60)),
@@ -68,7 +87,7 @@ export function routeCardMarkup(route, index, escape = value => String(value ?? 
     ? `<p class="ferry-detail"><strong>${escape(view.operator)}</strong>${view.ticketRequired ? " · Ticket required" : ""}${view.securityScreeningRequired ? " · Security screening required" : ""}${view.ferryScheduleUnavailable ? " · Check current schedule and ticket availability" : ""}</p>`
     : "";
   const warning = view.hasTransitGeometryGap ? "Detailed transit map geometry is unavailable for part of this route." : "";
-  return `<article class="route-card${selectedClass}">${selectButton(route.label, view.icon, view.durationLabel)}<p class="route-summary">${view.boardingName ? `Board at ${escape(view.boardingName)}${view.exitName ? ` and exit at ${escape(view.exitName)}.` : "."}` : "Transit stop details are unavailable."}</p><p class="transit-arrival-line"><strong>${escape(view.transitSummary[0] || "Transit")}</strong> · ${escape(view.arrivalText)}</p>${ferryDetails}<div class="route-metrics"><div class="route-metric"><span>Distance</span><strong>${Math.round(route.distanceMeters || 0)} m</strong></div><div class="route-metric"><span>Data coverage</span><strong>${escape(view.dataCoverage)}</strong></div><div class="route-metric"><span>Estimated lighting coverage</span><strong>${escape(view.lighting)}</strong></div><div class="route-metric"><span>Surface & slope</span><strong>${escape(view.surfaceSlope)}</strong></div><div class="route-metric"><span>Elevator / transit</span><strong>${escape(view.elevatorStatus)}</strong></div></div>${warning ? `<p class="trust-line">${escape(warning)}</p>` : ""}<ol class="segment-list">${transitItems}${boardingItems}</ol></article>`;
+  return `<article class="route-card${selectedClass}">${selectButton(route.label, view.icon, view.durationLabel)}<p class="route-summary">${view.boardingName ? `Board at ${escape(view.boardingName)}${view.exitName ? ` and exit at ${escape(view.exitName)}.` : "."}` : "Transit stop details are unavailable."}</p><p class="transit-arrival-line"><strong>${escape(view.transitSummary[0] || "Transit")}</strong> · ${escape(view.arrivalText)}</p>${ferryDetails}<div class="route-metrics"><div class="route-metric"><span>Distance</span><strong>${Math.round(route.distanceMeters || 0)} m</strong></div><div class="route-metric"><span>Data coverage</span><strong>${escape(view.dataCoverage)}</strong></div><div class="route-metric"><span>Estimated lighting coverage</span><strong>${escape(view.lighting)}</strong></div><div class="route-metric"><span>Surface & slope</span><strong>${escape(view.surfaceSlope)}</strong></div><div class="route-metric"><span>Scheduled wait</span><strong>${view.waitMinutes} min</strong></div><div class="route-metric"><span>Elevator / transit</span><strong>${escape(view.elevatorStatus)}</strong></div></div>${warning ? `<p class="trust-line">${escape(warning)}</p>` : ""}<ol class="segment-list">${transitItems}${boardingItems}</ol></article>`;
 }
 
 function dataCoverageLabel(route) {
