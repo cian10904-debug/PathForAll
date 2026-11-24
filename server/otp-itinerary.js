@@ -65,21 +65,45 @@ export function normalizeOtpItinerary(
     const gap = haversineMeters(selected, point);
     if (gap <= 3) return;
     if (gap > 35 || haversineMeters(selected, place.coordinates) > 3) {
-      throw transitError("ENDPOINT_CONNECTOR_UNAVAILABLE", { reasons: ["The walking route does not reach the selected location."] });
+      throw transitError("ENDPOINT_CONNECTOR_UNAVAILABLE", {
+        reasons: ["The walking route does not reach the selected location."],
+      });
     }
-    if (request.needs.unknownPolicy !== "allow" && (request.needs.wheelchairMode || request.needs.avoidStairs
-      || request.needs.requireCurb || request.needs.requireSmooth || request.needs.requireElevator
-      || [request.needs.maxSlope, request.needs.maxUphillSlope, request.needs.maxDownhillSlope].some(Number.isFinite))) {
-      throw transitError("INSUFFICIENT_ACCESSIBILITY_EVIDENCE", { reasons: ["The path between the selected place and the mapped access point is unknown."] });
+    if (
+      request.needs.unknownPolicy !== "allow" &&
+      (request.needs.wheelchairMode ||
+        request.needs.avoidStairs ||
+        request.needs.requireCurb ||
+        request.needs.requireSmooth ||
+        request.needs.requireElevator ||
+        [
+          request.needs.maxSlope,
+          request.needs.maxUphillSlope,
+          request.needs.maxDownhillSlope,
+        ].some(Number.isFinite))
+    ) {
+      throw transitError("INSUFFICIENT_ACCESSIBILITY_EVIDENCE", {
+        reasons: [
+          "The path between the selected place and the mapped access point is unknown.",
+        ],
+      });
     }
     endpointConnections[label] = {
-      selectedCoordinates: selected, accessPointCoordinates: point,
-      connectorStatus: "estimated", connectorGeometry: null, connectorDistanceMeters: gap,
-      connectorSource: "OpenTripPlanner street graph projection"
+      selectedCoordinates: selected,
+      accessPointCoordinates: point,
+      connectorStatus: "estimated",
+      connectorGeometry: null,
+      connectorDistanceMeters: gap,
+      connectorSource: "OpenTripPlanner street graph projection",
     };
     place.coordinates = point;
-    warnings.add("The mapped " + (label === "start" ? "start" : "end") + " is " + Math.round(gap)
-      + " m from your selected point. Travel time does not include this unverified connection.");
+    warnings.add(
+      "The mapped " +
+        (label === "start" ? "start" : "end") +
+        " is " +
+        Math.round(gap) +
+        " m from your selected point. Travel time does not include this unverified connection.",
+    );
   };
   const legs = inputLegs.map((raw, index) => {
     const mode = routeModeFromOtp(raw?.mode);
@@ -157,15 +181,30 @@ export function normalizeOtpItinerary(
     if (!vehicle && raw.distance > 1 && !decoded)
       throw transitError("ENDPOINT_CONNECTOR_UNAVAILABLE");
     if (decoded && !vehicle) {
-      if (index === 0 && !raw.from?.stop) snapEndpoint("start", from, decoded[0]);
-      if (index === inputLegs.length - 1 && !raw.to?.stop) snapEndpoint("end", to, decoded.at(-1));
-      if (haversineMeters(from.coordinates, decoded[0]) > 25 || haversineMeters(to.coordinates, decoded.at(-1)) > 25)
-        throw transitError("ENDPOINT_CONNECTOR_UNAVAILABLE", { reasons: ["Walking geometry does not reach its boarding or exit location."] });
-    } else if (decoded && (haversineMeters(from.coordinates, decoded[0]) > 25 || haversineMeters(to.coordinates, decoded.at(-1)) > 25)) {
+      if (index === 0 && !raw.from?.stop)
+        snapEndpoint("start", from, decoded[0]);
+      if (index === inputLegs.length - 1 && !raw.to?.stop)
+        snapEndpoint("end", to, decoded.at(-1));
+      if (
+        haversineMeters(from.coordinates, decoded[0]) > 25 ||
+        haversineMeters(to.coordinates, decoded.at(-1)) > 25
+      )
+        throw transitError("ENDPOINT_CONNECTOR_UNAVAILABLE", {
+          reasons: [
+            "Walking geometry does not reach its boarding or exit location.",
+          ],
+        });
+    } else if (
+      decoded &&
+      (haversineMeters(from.coordinates, decoded[0]) > 25 ||
+        haversineMeters(to.coordinates, decoded.at(-1)) > 25)
+    ) {
       // A valid scheduled ride can have a provider shape that ends elsewhere
       // on a long platform. Keep the trip and stops; do not draw the mismatched shape.
       decoded = null;
-      warnings.add("One vehicle shape does not align with its stops and is omitted from the map.");
+      warnings.add(
+        "One vehicle shape does not align with its stops and is omitted from the map.",
+      );
     }
     if (isEstimate)
       warnings.add(

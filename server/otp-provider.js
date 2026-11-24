@@ -218,7 +218,12 @@ export function createOtpProvider({
       )
         throw transitError("OUTSIDE_TRANSIT_COVERAGE");
       const graph = await health();
-      if (signal?.aborted) throw transitError(signal.reason?.name === DEADLINE ? "PROVIDER_TIMEOUT" : "REQUEST_CANCELLED");
+      if (signal?.aborted)
+        throw transitError(
+          signal.reason?.name === DEADLINE
+            ? "PROVIDER_TIMEOUT"
+            : "REQUEST_CANCELLED",
+        );
       const when = new Date(request.departureTime);
       assertServiceRange(graph, when);
       // Include tomorrow's feed when a valid transfer arrives after midnight.
