@@ -1,10 +1,11 @@
 "use strict";
 
 import { coordinate, lineGeometry } from "./route-model.js";
+import { actualVehicleModes, LEG_MODES, searchMode } from "./transit-modes.js";
 import { appStorage } from "./storage-adapter.js";
 
 const SAVED_KEY = "pathforall-saved-v1";
-const SAVED_SCHEMA_VERSION = 3;
+const SAVED_SCHEMA_VERSION = 4;
 
 export function loadSavedRoutes() {
   const value = appStorage.readJson(SAVED_KEY, [], { version: SAVED_SCHEMA_VERSION });
@@ -23,6 +24,8 @@ export function saveRoute(route, startPlace, endPlace) {
     // `routeKey` is retained for existing local records and any legacy UI code.
     routeKey: routeId,
     mode: validMode(route.mode),
+    requestedMode: validMode(route.requestedMode || route.mode),
+    actualModes: actualVehicleModes(legs),
     label: String(route.label || route.optionLabel || "Accessible route").slice(0, 80),
     durationSeconds,
     totalDurationSeconds: durationSeconds,
@@ -81,6 +84,8 @@ function normalizeSavedRoute(value) {
     routeId: String(routeId),
     routeKey: String(value.routeKey || routeId),
     mode: validMode(value.mode),
+    requestedMode: validMode(value.requestedMode || value.mode),
+    actualModes: actualVehicleModes(Array.isArray(value.legs) ? value.legs.filter(leg => leg && typeof leg === "object") : []),
     label: String(value.label || "Accessible route").slice(0, 80),
     durationSeconds,
     totalDurationSeconds: durationSeconds,
@@ -111,7 +116,7 @@ function nonNegative(value, fallback = 0) {
 }
 
 function validMode(value) {
-  return ["walk", "bus", "subway", "ferry", "mixed"].includes(value) ? value : null;
+  return searchMode(value);
 }
 
 function stringList(value) {
@@ -124,7 +129,7 @@ function validSavedAt(value) {
 }
 
 function serializeLeg(value) {
-  if (!value || !["walk", "bus", "subway", "ferry", "transfer"].includes(value.mode)) return null;
+  if (!value || !LEG_MODES.has(value.mode)) return null;
   const from = serializePlace(value.from);
   const to = serializePlace(value.to);
   if (!from.coordinates.length || !to.coordinates.length) return null;
@@ -137,6 +142,10 @@ function serializeLeg(value) {
     to,
     routeId: nullableString(value.routeId),
     routeName: nullableString(value.routeName),
+    tripId: nullableString(value.tripId),
+    directionId: nullableString(value.directionId),
+    serviceDate: nullableString(value.serviceDate),
+    staySeated: value.staySeated === true,
     headsign: nullableString(value.headsign),
     durationSeconds: nonNegative(value.durationSeconds),
     distanceMeters: nonNegative(value.distanceMeters),

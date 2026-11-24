@@ -27,6 +27,7 @@ assert.deepEqual(disconnected.modeAvailability, {
   bus: false,
   subway: false,
   ferry: false,
+  rail: false,
   mixed: false
 });
 
@@ -161,6 +162,7 @@ assert.deepEqual(complete.modeAvailability, {
   bus: true,
   subway: true,
   ferry: true,
+  rail: false,
   mixed: true
 });
 

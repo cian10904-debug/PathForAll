@@ -82,6 +82,15 @@ assert.equal(
   "geometry that does not reach a leg endpoint is rejected"
 );
 
+const departure = new Date("2026-11-24T15:00:00Z");
+const timed = serverBusRoute();
+let cursor = +departure;
+timed.legs = timed.legs.map(leg => {
+  cursor += (leg.waitSeconds || 0) * 1000;
+  const departureTime = new Date(cursor).toISOString();
+  cursor += leg.durationSeconds * 1000;
+  return { ...leg, departureTime, arrivalTime: new Date(cursor).toISOString() };
+});
 const requestLog = [];
 const service = createRoutingService({
   url: "https://routing.example.test/plan",
@@ -94,12 +103,12 @@ const service = createRoutingService({
         freshness: "current",
         updatedAt: "2099-01-01T12:00:00.000Z",
         expiresAt: "2099-01-01T13:00:00.000Z",
-        routes: [serverBusRoute(), { id: "bad", mode: "bus", legs: [] }]
+        routes: [timed, { id: "bad", mode: "bus", legs: [] }]
       })
     };
   }
 });
-const planned = await service.plan({ start: START, end: END, needs: { wheelchairMode: true }, mode: "bus" });
+const planned = await service.plan({ start: START, end: END, needs: { wheelchairMode: true }, mode: "bus", departureTime: departure });
 assert.equal(planned.length, 1, "invalid provider responses are filtered before the UI sees them");
 assertRouteShape(planned[0], "bus");
 assert.equal(requestLog.length, 1);
@@ -218,9 +227,9 @@ function serverBusRoute() {
     label: "Accessible M8",
     dataSource: "Test routing provider",
     legs: [
-      { id: "walk-to-bus", mode: "walk", from: START, to: BOARD, durationSeconds: 120, distanceMeters: 95, geometry: line(START.coordinates, BOARD.coordinates) },
-      { id: "ride-m8", mode: "bus", from: BOARD, to: EXIT, routeId: "M8", routeName: "M8", headsign: "East Village", durationSeconds: 480, waitSeconds: 120, distanceMeters: 760, geometry: line(BOARD.coordinates, EXIT.coordinates), accessibility: { wheelchairAccessible: true } },
-      { id: "walk-from-bus", mode: "walk", from: EXIT, to: END, durationSeconds: 100, distanceMeters: 90, geometry: line(EXIT.coordinates, END.coordinates) }
+      { id: "walk-to-bus", mode: "walk", from: START, to: BOARD, durationSeconds: 120, distanceMeters: 95, geometry: line(START.coordinates, BOARD.coordinates), accessibility: { stairs: false, pedestrianEvidence: "dedicated", requiresCurbRamp: false } },
+      { id: "ride-m8", mode: "bus", from: BOARD, to: EXIT, routeId: "M8", routeName: "M8", headsign: "East Village", durationSeconds: 480, waitSeconds: 120, distanceMeters: 760, geometry: line(BOARD.coordinates, EXIT.coordinates), accessibility: { wheelchairAccessible: true, boardingCurb: true, exitCurb: true } },
+      { id: "walk-from-bus", mode: "walk", from: EXIT, to: END, durationSeconds: 100, distanceMeters: 90, geometry: line(EXIT.coordinates, END.coordinates), accessibility: { stairs: false, pedestrianEvidence: "dedicated", requiresCurbRamp: false } }
     ]
   };
 }
@@ -249,7 +258,7 @@ function serverFerryRoute() {
     label: "Statue City Cruises via The Battery",
     dataSource: "Test routing provider",
     legs: [
-      { id: "walk-to-terminal", mode: "walk", from: START, to: BOARD, durationSeconds: 120, distanceMeters: 95, geometry: line(START.coordinates, BOARD.coordinates) },
+      { id: "walk-to-terminal", mode: "walk", from: START, to: BOARD, durationSeconds: 120, distanceMeters: 95, geometry: line(START.coordinates, BOARD.coordinates), accessibility: { stairs: false, pedestrianEvidence: "dedicated", requiresCurbRamp: false } },
       {
         id: "ride-ferry",
         mode: "ferry",
@@ -275,7 +284,7 @@ function serverFerryRoute() {
           accessibleRestroomOnboard: "unknown"
         }
       },
-      { id: "island-path", mode: "walk", from: EXIT, to: END, durationSeconds: 100, distanceMeters: 90, geometry: line(EXIT.coordinates, END.coordinates) }
+      { id: "island-path", mode: "walk", from: EXIT, to: END, durationSeconds: 100, distanceMeters: 90, geometry: line(EXIT.coordinates, END.coordinates), accessibility: { stairs: false, pedestrianEvidence: "dedicated", requiresCurbRamp: false } }
     ],
     warnings: ["Check the current ferry schedule and ticket availability."]
   };
@@ -288,11 +297,11 @@ function serverMixedRoute() {
     label: "Accessible mixed route",
     dataSource: "Test routing provider",
     legs: [
-      { id: "walk-to-bus", mode: "walk", from: START, to: BOARD, durationSeconds: 120, distanceMeters: 95, geometry: line(START.coordinates, BOARD.coordinates) },
+      { id: "walk-to-bus", mode: "walk", from: START, to: BOARD, durationSeconds: 120, distanceMeters: 95, geometry: line(START.coordinates, BOARD.coordinates), accessibility: { stairs: false, pedestrianEvidence: "dedicated", requiresCurbRamp: false } },
       { id: "ride-bus", mode: "bus", from: BOARD, to: TRANSFER, routeId: "M8", routeName: "M8", durationSeconds: 240, distanceMeters: 330, geometry: line(BOARD.coordinates, TRANSFER.coordinates) },
       { id: "station-transfer", mode: "transfer", from: TRANSFER, to: TRANSFER, durationSeconds: 90, distanceMeters: 35, geometry: line(TRANSFER.coordinates, TRANSFER.coordinates), accessibility: { elevatorStatus: "working" } },
       { id: "ride-subway", mode: "subway", from: TRANSFER, to: EXIT, routeId: "F", routeName: "F", headsign: "Coney Island", durationSeconds: 300, waitSeconds: 60, distanceMeters: 380, geometry: line(TRANSFER.coordinates, EXIT.coordinates), accessibility: { elevatorStatus: "unknown" } },
-      { id: "walk-from-station", mode: "walk", from: EXIT, to: END, durationSeconds: 100, distanceMeters: 90, geometry: line(EXIT.coordinates, END.coordinates) }
+      { id: "walk-from-station", mode: "walk", from: EXIT, to: END, durationSeconds: 100, distanceMeters: 90, geometry: line(EXIT.coordinates, END.coordinates), accessibility: { stairs: false, pedestrianEvidence: "dedicated", requiresCurbRamp: false } }
     ]
   };
 }

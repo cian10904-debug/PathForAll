@@ -1,3 +1,4 @@
+import { continuesRide, VEHICLE_MODES } from "./transit-modes.js";
 "use strict";
 
 import { haversineMeters } from "./osm-network.js";
@@ -97,6 +98,9 @@ export function isPedestrianOffRouteEligible(step, accuracy) {
     && step.coordinates.every(validCoordinate);
 }
 
+/** @param {{completedRecorded?: boolean}} navigation
+ * @param {(details: {mode: string, source: "gps"|"preview"}) => void} callback
+ * @param {{mode: string, source: "gps"|"preview"}} details */
 export function recordNavigationCompletionOnce(navigation, callback, details) {
   if (!navigation || navigation.completedRecorded) return false;
   navigation.completedRecorded = true;
@@ -121,11 +125,11 @@ export function buildRouteNavigationSteps(route, destinationName = "destination"
       continue;
     }
     if (leg.mode === "transfer") {
-      steps.push({ id: `transfer-${leg.id}`, type: "transfer", icon: "↔", instruction: "Make the accessible transfer", detail: leg.accessibility?.elevatorStatus ? `Elevator status: ${leg.accessibility.elevatorStatus}` : "Check transfer accessibility", distanceMeters: Number(leg.distanceMeters || 0), minutes: Number(leg.durationSeconds || 0) / 60, coordinates: navigationGeometry(leg), targetCoordinate });
+      steps.push({ id: `transfer-${leg.id}`, type: "transfer", icon: "↔", instruction: "Walk to the next boarding point", detail: leg.accessibility?.elevatorStatus ? `Elevator status: ${leg.accessibility.elevatorStatus}` : "Check transfer accessibility", distanceMeters: Number(leg.distanceMeters || 0), minutes: Number(leg.durationSeconds || 0) / 60, coordinates: navigationGeometry(leg), targetCoordinate });
       index += 1;
       continue;
     }
-    if (leg.mode === "bus" || leg.mode === "subway" || leg.mode === "ferry") {
+    if (VEHICLE_MODES.has(leg.mode)) {
       const group = collectTransitLegGroup(legs, index);
       const first = group.legs[0];
       const last = group.legs.at(-1);
@@ -145,27 +149,28 @@ export function buildRouteNavigationSteps(route, destinationName = "destination"
       if (Number(first.waitSeconds || 0) > 0) {
         steps.push({ id: `wait-${first.id}`, type: "wait", icon: "◷", instruction: `Wait for ${first.operator || first.routeName || first.routeId || "transit"}`, detail: `${Math.ceil(Number(first.waitSeconds) / 60)} min ${first.waitSource === "scheduled" ? "scheduled" : "provider"} wait at ${first.from.name}`, distanceMeters: 0, minutes: Number(first.waitSeconds) / 60, coordinates: [first.from.coordinates], targetCoordinate: first.from.coordinates });
       }
-      const serviceName = first.mode === "ferry" ? first.operator || "Statue City Cruises" : `${first.mode} ${first.routeName || first.routeId || "service"}`;
+      const serviceName = first.mode === "ferry" ? first.operator || first.routeName || "ferry service" : `${first.mode} ${first.routeName || first.routeId || "service"}`;
       steps.push({ id: `board-${first.id}`, type: "board", icon: transitIcon(first.mode), instruction: `Board ${serviceName}`, detail: `${first.headsign ? `Toward ${first.headsign} · ` : ""}${first.from.name}${first.ticketRequired ? " · ticket required" : ""}`, distanceMeters: 0, minutes: 0, coordinates: [first.from.coordinates], targetCoordinate: first.from.coordinates });
-      steps.push({ id: `ride-${first.id}-${last.id}`, type: first.mode, icon: transitIcon(first.mode), route: first.routeName || first.routeId, instruction: `Ride to ${last.to.name}`, detail: first.mode === "ferry" ? `${first.operator || "Statue City Cruises"}${first.scheduleSource ? "" : " · check current schedule"}` : `${group.stopCount} stop${group.stopCount === 1 ? "" : "s"}${last.accessibility?.elevatorStatus ? ` · elevator ${last.accessibility.elevatorStatus}` : ""}`, distanceMeters: group.distanceMeters, minutes: group.durationSeconds / 60, coordinates: group.geometry, targetCoordinate: last.to.coordinates });
-      steps.push({ id: `exit-${last.id}`, type: "exit", icon: "↓", instruction: `Exit at ${last.to.name}`, detail: first.mode === "ferry" ? "Continue on the accessible island path shown by the route provider." : last.accessibility?.elevatorStatus ? `Elevator status: ${last.accessibility.elevatorStatus}` : "Continue using the accessible exit.", distanceMeters: 0, minutes: 0, coordinates: [last.to.coordinates], targetCoordinate: last.to.coordinates });
+      steps.push({ id: `ride-${first.id}-${last.id}`, type: first.mode, icon: transitIcon(first.mode), route: first.routeName || first.routeId, instruction: `Ride to ${last.to.name}`, detail: first.mode === "ferry" ? `${first.operator || first.routeName || "ferry service"}${first.scheduleSource ? "" : " · check current schedule"}` : `${group.stopCount} stop${group.stopCount === 1 ? "" : "s"}${last.accessibility?.elevatorStatus ? ` · elevator ${last.accessibility.elevatorStatus}` : ""}`, distanceMeters: group.distanceMeters, minutes: group.durationSeconds / 60, coordinates: group.geometry, targetCoordinate: last.to.coordinates });
+      steps.push({ id: `exit-${last.id}`, type: "exit", icon: "↓", instruction: `Exit at ${last.to.name}`, detail: first.mode === "ferry" ? "Continue on the accessible island path shown by the route provider." : last.accessibility?.elevatorStatus ? `Elevator status: ${last.accessibility.elevatorStatus}` : "Follow the mapped exit and review accessibility information.", distanceMeters: 0, minutes: 0, coordinates: [last.to.coordinates], targetCoordinate: last.to.coordinates });
       index = group.nextIndex;
       continue;
     }
     index += 1;
   }
-  if (steps.length) steps.push({ id: "arrive", type: "arrive", icon: "●", instruction: `Arrive at ${destinationName}`, detail: "Trip complete.", distanceMeters: 0, minutes: 0, coordinates: [steps.at(-1).targetCoordinate], targetCoordinate: steps.at(-1).targetCoordinate });
+  const arrivalLabel = route.endpointConnections?.end?.connectorStatus === "estimated"
+    ? "Reach the mapped access point for " + destinationName : "Arrive at " + destinationName;
+  if (steps.length) steps.push({ id: "arrive", type: "arrive", icon: "●", instruction: arrivalLabel, detail: "Trip complete.", distanceMeters: 0, minutes: 0, coordinates: [steps.at(-1).targetCoordinate], targetCoordinate: steps.at(-1).targetCoordinate });
   return steps;
 }
 
 function collectTransitLegGroup(legs, startIndex) {
-  const first = legs[startIndex];
-  const key = transitVehicleKey(first);
+
   const group = [];
   let index = startIndex;
   while (index < legs.length) {
     const leg = legs[index];
-    if (!leg || !["bus", "subway", "ferry"].includes(leg.mode) || transitVehicleKey(leg) !== key) break;
+    if (!leg || !VEHICLE_MODES.has(leg.mode) || (index > startIndex && !continuesRide(legs[index-1], leg))) break;
     group.push(leg);
     index += 1;
   }
@@ -181,9 +186,7 @@ function collectTransitLegGroup(legs, startIndex) {
   };
 }
 
-function transitVehicleKey(leg) {
-  return `${leg.mode}:${leg.routeId || leg.routeName || leg.operator || leg.id}:${leg.tripId || leg.directionId || leg.headsign || ""}`;
-}
+
 
 function navigationGeometry(leg) {
   if (!isRenderableLegGeometry(leg)) return [];
@@ -232,7 +235,7 @@ export function remainingMinutes(steps, stepIndex) {
 }
 
 function transitIcon(mode) {
-  return mode === "bus" ? "🚌" : mode === "subway" ? "🚇" : "⛴";
+  return mode === "bus" ? "🚌" : mode === "subway" ? "🚇" : mode === "rail" ? "🚆" : "⛴";
 }
 
 function compressWalkingSteps(steps) {

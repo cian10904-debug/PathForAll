@@ -144,7 +144,7 @@ for (const stop of TRANSIT_STOPS) {
     wheelchairAccessible: true,
     status: "working",
     freshness: "current",
-    updatedAt: "2099-01-01T12:00:00.000Z"
+    updatedAt: new Date().toISOString()
   }];
 }
 

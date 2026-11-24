@@ -81,8 +81,8 @@ const alternativePath = applyMtaElevatorRecords([{
     }
   ]
 }], [
-  { equipmentCode: "EL-W4-01", status: "out", freshness: "current", updatedAt: "2099-01-01T12:00:00.000Z" },
-  { equipmentCode: "EL-W4-02", status: "working", freshness: "current", updatedAt: "2099-01-01T12:00:00.000Z" }
+  { equipmentCode: "EL-W4-01", status: "out", freshness: "current", updatedAt: new Date().toISOString() },
+  { equipmentCode: "EL-W4-02", status: "working", freshness: "current", updatedAt: new Date().toISOString() }
 ])[0];
 assert.equal(alternativePath.elevatorStatus, "working", "one failed elevator does not remove a complex when another complete path remains");
 const subway = planTransitRoutes({

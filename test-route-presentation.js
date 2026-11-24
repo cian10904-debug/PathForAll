@@ -16,7 +16,7 @@ const walking = route({
 const walkingView = routeCardViewModel(walking);
 assert.equal(walkingView.type, "walk");
 assert.doesNotThrow(() => routeCardMarkup(walking, 0, escapeHtml, true), "walking routes do not use transit-only fields");
-assert.match(routeCardMarkup(walking, 0, escapeHtml), /Personalized accessible walking route/);
+assert.match(routeCardMarkup(walking, 0, escapeHtml), /Walking route based on available map evidence/);
 assert.match(routeCardMarkup(walking, 0, escapeHtml, true), /<article class="route-card selected">/);
 assert.match(routeCardMarkup(walking, 0, escapeHtml, true), /role="radio" aria-checked="true"/);
 assert.doesNotMatch(routeCardMarkup(walking, 0, escapeHtml), /Access score/, "cards do not present an unexplained probability-like score");
@@ -95,6 +95,7 @@ assert.deepEqual(routeLayerData(null), {
   walk: { type: "FeatureCollection", features: [] },
   bus: { type: "FeatureCollection", features: [] },
   subway: { type: "FeatureCollection", features: [] },
+  rail: { type: "FeatureCollection", features: [] },
   ferry: { type: "FeatureCollection", features: [] }
 }, "empty layer data can clear an earlier mode without reinitializing the map");
 

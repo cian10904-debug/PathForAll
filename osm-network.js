@@ -1,5 +1,7 @@
 "use strict";
 
+import { inferKerbState, reverseEdge } from "./accessibility.js";
+
 import { fetchWithPolicy } from "./fetch-client.js";
 
 // Validation and search boundary for all five NYC boroughs. Coordinates are [longitude, latitude].
@@ -52,9 +54,13 @@ export async function loadLiveOsmGraph(bounds, options = {}) {
 
       if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
       const payload = await response.json();
-      const graph = parseOverpassGraph(payload, { preserveComponents: options.preserveComponents === true });
+      const graph = parseOverpassGraph(payload, { preserveComponents: options.preserveComponents !== false });
       if (graph.edges.length < 20) throw new Error("The returned pedestrian graph was unexpectedly small.");
-      return { ...graph, source: "OpenStreetMap via Overpass API", endpoint };
+      return { ...graph, source: "OpenStreetMap via Overpass API", endpoint,
+        provenance: { source: endpoint, retrievedAt: new Date().toISOString(),
+          snapshotTimestamp: payload.osm3s?.timestamp_osm_base || null, observedAt: null,
+          license: "OpenStreetMap contributors, ODbL 1.0", evidenceLevel: "map data; not field verification" }
+      };
     } catch (error) {
       if (options.signal?.aborted || error?.name === "AbortError") throw new DOMException("Route network request cancelled.", "AbortError");
       errors.push(`${endpoint}: ${error instanceof Error ? error.message : String(error)}`);
@@ -160,12 +166,15 @@ export function parseOverpassGraph(payload, options = {}) {
 
       const endpointTags = [fromOsm.tags, toOsm.tags];
       const crossing = isCrossing(tags, endpointTags);
-      const kerbState = inferKerbState(endpointTags);
+      const crossingEnds = tags.footway === "crossing" || tags.crossing != null
+        ? [osmNodes.get(way.nodes[0]), osmNodes.get(way.nodes.at(-1))]
+        : [null, null];
+      const kerbState = inferKerbState(crossingEnds.map(node => node?.tags), crossingEnds.map(node => node?.id || "missing"));
       const slope = parseInclinePercent(tags.incline);
       const surface = classifySurface(tags.surface, tags.smoothness);
       const shade = inferShade(tags);
       const wheelchairStatus = tags.wheelchair || null;
-      const stairs = tags.highway === "steps" || wheelchairStatus === "no";
+      const stairs = tags.highway === "steps";
       const requiresElevator = tags.highway === "elevator" || endpointTags.some(item => item.highway === "elevator");
       const covered = tags.covered === "yes" || tags.indoor === "yes" || tags.tunnel === "building_passage" || tags.highway === "corridor";
       const lit = parseLit(tags.lit);
@@ -189,10 +198,18 @@ export function parseOverpassGraph(payload, options = {}) {
         surface,
         stairs,
         wheelchairStatus,
+        nodeRestrictions: [fromOsm, toOsm].filter(node => node.tags.wheelchair === "no"
+          || node.tags.foot === "no" || node.tags.foot === "private"
+          || (["no", "private"].includes(node.tags.access) && !["yes", "permissive", "designated"].includes(node.tags.foot)))
+          .map(node => ({ nodeId: node.id, source: "OpenStreetMap", wheelchair: node.tags.wheelchair === "no",
+            pedestrian: node.tags.foot === "no" || node.tags.foot === "private"
+              || (["no", "private"].includes(node.tags.access) && !["yes", "permissive", "designated"].includes(node.tags.foot)) })),
         requiresCurbRamp: crossing,
         // `null` means no mapped curb evidence. It must never satisfy a strict
         // curb-ramp requirement.
-        curbRamp: crossing ? kerbState : true,
+        curbRamp: crossing ? (kerbState.state === "satisfied" ? true : kerbState.state === "violated" ? false : null) : true,
+        curbEvidence: crossing ? kerbState : undefined,
+        crossingEventId: crossing ? `crossing-way-${way.id}` : undefined,
         shade,
         covered,
         lit,
@@ -209,7 +226,11 @@ export function parseOverpassGraph(payload, options = {}) {
           authoritative: false
         } : null,
         confidence,
-        bidirectional: tags["oneway:foot"] !== "yes",
+        bidirectional: !["yes", "1", "-1"].includes(tags["oneway:foot"]),
+        layer: tags.layer || "0",
+        level: tags.level || "0",
+        bridge: tags.bridge != null && tags.bridge !== "no",
+        tunnel: tags.tunnel != null && tags.tunnel !== "no",
         blocked: false,
         reports: 0,
         tags
@@ -217,7 +238,10 @@ export function parseOverpassGraph(payload, options = {}) {
     }
   }
 
-  const connected = options.preserveComponents === true ? { nodes, edges } : keepLargestConnectedComponent(nodes, edges);
+  for (let i = 0; i < edges.length; i += 1) {
+    if (edges[i].tags["oneway:foot"] === "-1") edges[i] = reverseEdge(edges[i]);
+  }
+  const connected = options.preserveComponents === false ? keepLargestConnectedComponent(nodes, edges) : { nodes, edges };
   const accessPoints = [...osmNodes.values()]
     .filter(node => isAccessPoint(node.tags))
     .map(node => ({
@@ -287,23 +311,14 @@ function isCrossing(wayTags, endpointTags) {
     || endpointTags.some(tags => tags.highway === "crossing" || tags.crossing != null);
 }
 
-function inferKerbState(endpointTags) {
-  const values = endpointTags
-    .map(tags => tags.kerb || tags.curb)
-    .filter(Boolean);
-
-  if (values.some(value => ["flush", "lowered", "no"].includes(value))) return true;
-  if (values.some(value => ["raised", "rolled", "yes"].includes(value))) return false;
-  return null;
-}
-
 export function parseInclinePercent(value) {
   if (value == null) return null;
   const text = String(value).trim().toLowerCase();
-  const numeric = Number.parseFloat(text.replace(",", "."));
-  if (!Number.isFinite(numeric)) return null;
-  if (text.includes("°")) return Math.abs(Math.tan(numeric * Math.PI / 180) * 100);
-  return Math.abs(numeric);
+  const match = text.replace(",", ".").match(/^([+-]?(?:\d+(?:\.\d*)?|\.\d+))\s*(%|°)?$/);
+  if (!match) return null;
+  const numeric = Number(match[1]);
+  if (!Number.isFinite(numeric) || (match[2] === "°" && Math.abs(numeric) >= 90)) return null;
+  return match[2] === "°" ? Math.tan(numeric * Math.PI / 180) * 100 : numeric;
 }
 
 function classifySurface(surfaceValue, smoothnessValue) {
@@ -366,7 +381,7 @@ function calculateConfidence({ tags, slope, surface, crossing, kerbState, shade 
   if (tags.wheelchair) score += 0.12;
   if (slope != null) score += 0.12;
   if (surface !== "unknown") score += 0.10;
-  if (!crossing || kerbState != null) score += 0.10;
+  if (!crossing || kerbState.state !== "unknown") score += 0.10;
   if (shade != null) score += 0.04;
   if (tags.lit) score += 0.03;
   return Math.min(0.95, score);
@@ -389,8 +404,8 @@ function keepLargestConnectedComponent(nodes, edges) {
     const queue = [nodeId];
     visited.add(nodeId);
 
-    while (queue.length) {
-      const current = queue.shift();
+    for (let cursor = 0; cursor < queue.length; cursor += 1) {
+      const current = queue[cursor];
       component.add(current);
       for (const next of adjacency.get(current) || []) {
         if (!visited.has(next)) {
@@ -456,7 +471,8 @@ export function connectRouteEndpoints(nodes, edges, startPlace, endPlace, option
 function attachEndpoint(graph, place, endpointType, options) {
   const coordinates = place?.coordinates;
   if (!validCoordinate(coordinates)) return { ...graph, connected: false, endpointType, reason: "invalid-coordinate" };
-  const exactNode = Object.values(graph.nodes).find(node => haversineMeters(node.coordinates, coordinates) <= .35);
+  const exactNode = Object.values(graph.nodes).find(node => haversineMeters(node.coordinates, coordinates) <= .35
+    && graph.edges.some(edge => (edge.from === node.id || edge.to === node.id) && edgeEligibleForEndpoint(edge, options)));
   if (exactNode) {
     return {
       ...graph,
@@ -490,11 +506,21 @@ function attachEndpoint(graph, place, endpointType, options) {
     };
   }
 
+  const existingId = [best.edge.from, best.edge.to].find(id => haversineMeters(graph.nodes[id].coordinates, best.coordinate) <= .05);
+  if (existingId) return {
+    ...graph, connected: true, nodeId: existingId,
+    connector: endpointConnection(place, graph.nodes[existingId].coordinates, {
+      endpointType, edgeId: best.edge.id,
+      connectorGeometry: accessPoint?.connectorGeometry || null,
+      connectorDistanceMeters: haversineMeters(coordinates, graph.nodes[existingId].coordinates),
+      connectorSource: accessPoint?.connectorSource || "OpenStreetMap pedestrian edge",
+      connectorStatus: accessPoint?.connectorStatus || (best.distanceMeters <= .75 ? "verified" : "estimated"),
+      selectionOffsetMeters: haversineMeters(coordinates, graph.nodes[existingId].coordinates)
+    })
+  };
   const splitPoint = [...best.coordinate];
-  const nodeId =`selected-${endpointType}-${coordinateKey(splitPoint)}`;
   const accessCoordinates = accessPoint?.coordinates || best.coordinate;
-  const nodeId = `selected-${endpointType}-${coordinateKey(accessCoordinates)}`;
-  const splitPoint = [...best.coordinate];
+  const nodeId = `selected-${endpointType}-${coordinateKey(splitPoint)}`;
   const fromGeometry = [
     ...best.geometry.slice(0, best.segmentIndex + 1),
     splitPoint
@@ -503,12 +529,17 @@ function attachEndpoint(graph, place, endpointType, options) {
     splitPoint,
     ...best.geometry.slice(best.segmentIndex + 1)
   ];
-  const fromDistance = geometryDistance(fromGeometry);
-  const toDistance = geometryDistance(toGeometry);
-  const totalDistance = Math.max(.01, fromDistance + toDistance);
+  const geometryFromDistance = geometryDistance(fromGeometry);
+  const geometryToDistance = geometryDistance(toGeometry);
+  const geometryTotal = geometryFromDistance + geometryToDistance;
+  const totalDistance = best.edge.distanceMeters;
+  const fromDistance = totalDistance * geometryFromDistance / geometryTotal;
+  const toDistance = totalDistance - fromDistance;
   const sourceMinutes = Number(best.edge.minutes || 0);
   const base = {
     ...best.edge,
+    crossingEventId: best.edge.crossingEventId || (best.edge.crossing ? `crossing:${best.edge.id}` : undefined),
+    reportEventId: best.edge.reportEventId || (best.edge.reports ? `report:${best.edge.id}` : undefined),
     endpointConnector: true,
     connectorEvidence: "OpenStreetMap pedestrian edge",
     selectionOffsetMeters: best.distanceMeters
@@ -517,6 +548,7 @@ function attachEndpoint(graph, place, endpointType, options) {
     ...base,
     id: `${best.edge.id}--${endpointType}-before`,
     to: nodeId,
+    nodeRestrictions: (base.nodeRestrictions || []).filter(item => item.nodeId === base.from),
     geometry: fromGeometry,
     distanceMeters: fromDistance,
     minutes: sourceMinutes * fromDistance / totalDistance
@@ -525,13 +557,13 @@ function attachEndpoint(graph, place, endpointType, options) {
     ...base,
     id: `${best.edge.id}--${endpointType}-after`,
     from: nodeId,
+    nodeRestrictions: (base.nodeRestrictions || []).filter(item => item.nodeId === base.to),
     geometry: toGeometry,
     distanceMeters: toDistance,
     minutes: sourceMinutes * toDistance / totalDistance
   };
   const edges = graph.edges.filter(edge => edge.id !== best.edge.id);
-  if (fromDistance > .05) edges.push(before);
-  if (toDistance > .05) edges.push(after);
+  edges.push(before, after);
   return {
     nodes: {
       ...graph.nodes,
@@ -550,11 +582,10 @@ function attachEndpoint(graph, place, endpointType, options) {
       endpointType,
       edgeId: best.edge.id,
       distanceMeters: best.distanceMeters,
-      selectionOffsetMeters: best.distanceMeters,
-      evidence: "OpenStreetMap pedestrian edge"
+      evidence: "OpenStreetMap pedestrian edge",
       connectorGeometry: accessPoint?.connectorGeometry || null,
       connectorDistanceMeters: accessPoint
-        ? haversineMeters(coordinates, accessCoordinates)
+        ? haversineMeters(coordinates, accessCoordinates) + haversineMeters(accessCoordinates, splitPoint)
         : haversineMeters(coordinates, splitPoint),
       connectorSource: accessPoint?.connectorSource || "OpenStreetMap pedestrian edge",
       connectorStatus: accessPoint?.connectorStatus || (best.distanceMeters <= .75 ? "verified" : "estimated"),
@@ -642,6 +673,9 @@ function endpointConnection(place, accessPointCoordinates, details) {
 function edgeEligibleForEndpoint(edge, options = {}) {
   if (!edge || edge.blocked || !Array.isArray(edge.geometry) || edge.geometry.length < 2) return false;
   if (!["dedicated", "shared-space", "explicit-foot", "sidewalk-tag"].includes(edge.pedestrianEvidence)) return false;
+  if (options.level != null && String(options.level) !== String(edge.level || "0")) return false;
+  if (options.layer != null && String(options.layer) !== String(edge.layer || "0")) return false;
+  if (options.level == null && options.layer == null && (edge.bridge || edge.tunnel || !["0", undefined].includes(edge.level) || !["0", undefined].includes(edge.layer))) return false;
   if (options.avoidStairs && edge.stairs) return false;
   if (options.wheelchairMode && edge.roadCenterline) return false;
   return true;

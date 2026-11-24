@@ -20,3 +20,14 @@ __MACOSX/
 .env.*
 !.env.example
 *.zip
+
+# Generated data, binaries, local evaluation and reports
+evidence/
+test-results/
+playwright-report/
+__pycache__/
+*.pyc
+*.jar
+*.pbf
+*.obj
+*.log

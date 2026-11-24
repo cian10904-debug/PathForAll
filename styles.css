@@ -241,6 +241,7 @@ main {
 .route-legend i.walk { background: repeating-linear-gradient(90deg, #374151 0 5px, transparent 5px 8px); }
 .route-legend i.bus { background: #087a55; }
 .route-legend i.subway { background: #3155d8; }
+.route-legend i.rail { background: #a94416; }
 .route-legend i.ferry { background: repeating-linear-gradient(90deg, #7c3aed 0 6px, transparent 6px 9px); }
 
 .map-pick-banner {
@@ -525,7 +526,7 @@ body.map-pick-active .bottom-nav {
 
 .mode-row {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(6, minmax(0, 1fr));
   gap: 7px;
 }
 
@@ -577,7 +578,7 @@ body.map-pick-active .bottom-nav {
 .trip-needs-panel summary::-webkit-details-marker { display: none; }
 .trip-needs-panel summary strong { display: block; font-size: .76rem; }
 .trip-needs-panel summary small { display: block; margin-top: 2px; color: var(--muted); font-size: .62rem; }
-.trip-needs-panel[open] summary > span:last-child { transform: rotate(45deg); }
+.trip-needs-panel[open] summary > span[aria-hidden="true"] { transform: rotate(45deg); }
 
 .trip-needs-content { padding: 0 12px 12px; border-top: 1px solid var(--line); }
 
@@ -822,7 +823,7 @@ body.map-pick-active .bottom-nav {
   z-index: 60;
   top: calc(var(--header-height) + 16px);
   right: 20px;
-  bottom: 22px;
+  bottom: 82px;
   display: flex;
   width: min(430px, calc(100% - 40px));
   flex-direction: column;
@@ -842,11 +843,13 @@ body.map-pick-active .bottom-nav {
 .results-header { padding: 19px 19px 10px; }
 .results-header h2 { margin: 4px 0 0; font-size: 1.24rem; letter-spacing: -.03em; }
 
+.results-scroll-region { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding-bottom: 12px; }
+.results-header,
+.result-actions { flex-shrink: 0; }
+
 .route-list {
   display: grid;
-  flex: 1 1 auto;
   gap: 11px;
-  overflow: auto;
   padding: 6px 19px 0;
 }
 
@@ -1322,14 +1325,7 @@ body.navigation-active .map-stage { height: 100dvh; }
 @media (max-width: 380px) {
   .location-button span { display: none; }
   .location-button { width: 34px; justify-content: center; padding: 0; }
-  .mode-row {
-    grid-template-columns: none;
-    grid-auto-flow: column;
-    grid-auto-columns: minmax(78px, 1fr);
-    overflow-x: auto;
-    overscroll-behavior-inline: contain;
-    scrollbar-width: thin;
-  }
+  .mode-row { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .mode-chip { min-height: 44px; font-size: .75rem; }
   .mode-chip span { margin-right: 1px; }
   .route-card { padding: 13px; }
@@ -1442,3 +1438,10 @@ body.navigation-active .map-stage { height: 100dvh; }
     transition-duration: .01ms !important;
   }
 }
+
+@media (max-width: 480px) {
+  .mode-row { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+
+#departureTime { max-width: 100%; min-height: 44px; margin: 6px 0; }
+.transit-stop-marker.rail { background: #a94416; }

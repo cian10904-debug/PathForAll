@@ -10,6 +10,10 @@ export function loadPilotEvents() {
   return Array.isArray(value) ? value : [];
 }
 
+/**
+ * @param {"navigation_started"|"navigation_completed"|"navigation_preview_completed"|"routes_planned"|"automatic_reroute"|"segment_review"|"place_selected"} type
+ * @param {Record<string, unknown>} [details]
+ */
 export function recordPilotEvent(type, details = {}) {
   const events = loadPilotEvents();
   const event = {
@@ -28,14 +32,20 @@ export function recordPilotEvent(type, details = {}) {
   return event;
 }
 
+/** @param {{ mode: string, source: "gps"|"preview" }} details */
+export function recordCompletedJourney(details) {
+  return recordPilotEvent(details.source === "preview" ? "navigation_preview_completed" : "navigation_completed", details);
+}
+
 export function pilotMetrics(events = loadPilotEvents()) {
   const count = type => events.filter(event => event.type === type).length;
-  const completed = count("navigation_completed");
+  const completed = events.filter(event => event.type === "navigation_completed" && event.details?.source !== "preview" && event.details?.source !== "demo").length;
   const started = count("navigation_started");
   return {
     routesPlanned: count("routes_planned"),
     navigationStarted: started,
     navigationCompleted: completed,
+    previewsCompleted: count("navigation_preview_completed"),
     completionRate: started ? completed / started : 0,
     reroutes: count("automatic_reroute"),
     segmentReviews: count("segment_review"),

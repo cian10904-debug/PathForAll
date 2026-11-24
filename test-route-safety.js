@@ -48,7 +48,7 @@ const stalePath = {
   wheelchairAccessible: true,
   status: "working",
   freshness: "stale",
-  updatedAt: "2099-01-01T12:00:00.000Z",
+  updatedAt: new Date().toISOString(),
   entranceId: "entrance",
   fareControlAreaId: "fare",
   platformStopIds: ["platform"],

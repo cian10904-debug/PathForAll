@@ -1,4 +1,6 @@
-import maplibregl from "maplibre-gl";
+import { agencyDeparture } from "./agency-time.js";
+import { modeLabel } from "./transit-modes.js";
+import * as maplibregl from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import { planAllRoutes } from "./routing.js";
 import {
@@ -30,7 +32,7 @@ import {
   distanceToRouteMeters
 } from "./navigation.js";
 import { applyTrustMetadata, clearSegmentReviews, loadSegmentReviews, saveSegmentReview, summarizeRouteTrust, routeEdgeIds } from "./trust-store.js";
-import { clearPilotEvents, recordPilotEvent, pilotMetrics, exportPilotPayload } from "./pilot-store.js";
+import { clearPilotEvents, recordCompletedJourney, recordPilotEvent, pilotMetrics, exportPilotPayload } from "./pilot-store.js";
 import { clearSavedRoutes, loadSavedRoutes, removeSavedRoute, saveRoute } from "./saved-store.js";
 import { reportStorageError } from "./storage-adapter.js";
 import {
@@ -47,9 +49,10 @@ import { normalizeLocalTransitRoute, normalizeWalkingRoute } from "./route-model
 import { routeCardMarkup } from "./route-presentation.js";
 import { routeLayerData } from "./route-layer-data.js";
 import { createRouteSession } from "./route-session.js";
-import { isFerryRequiredDestination, resolveFerryDestination, ferryUnavailableMessage } from "./ferry-service.js";
+import { resolveFerryDestination, ferryUnavailableMessage } from "./ferry-service.js";
 import { TransitProviderError, TRANSIT_ERROR_MESSAGES } from "./transit-errors.js";
-import { fetchWithPolicy } from "./fetch-client.js";
+import { effectiveNeeds, emptyTripNeeds, applyNeedTextsToObject } from "./needs.js";
+import { loadWeather, unavailableWeather } from "./weather-service.js";
 import { createSearchController } from "./search-controller.js";
 import {
   buildTransitConnectionReport,
@@ -60,6 +63,12 @@ import {
 
 "use strict";
 
+import { createBaseMap } from "./map-integration.js";
+import { elements, buttons } from "./ui-dom.js";
+
+import { diagnoseNoRoute } from "./routing-diagnostics.js";
+import { validateRouteOption } from "./route-model.js";
+
 const state = {
   map: null,
   mapLoaded: false,
@@ -69,9 +78,10 @@ const state = {
   networkSource: "loading",
   networkCorridorKey: null,
   networkAbortController: null,
-  routeSession: createRouteSession(),
+  routeSession: createRouteSession(setPlanningBusy),
   routeProviderCapabilities: configuredRoutingCapabilities(),
   routeProviderCapabilitiesPromise: null,
+  lastCapabilityCheck: 0,
   startPlace: null,
   endPlace: null,
   startId: null,
@@ -150,9 +160,9 @@ function cacheElements() {
     "networkBadge", "headerAvatarFallback", "headerAvatarImage", "profileAvatarFallback", "profileAvatarImage",
     "profileDisplayName", "profileEmailDisplay", "mapMessage", "mapPickBanner", "mapPickText", "cancelMapPickButton", "useMapCenterButton",
     "startSearch", "endSearch", "startSuggestions", "endSuggestions", "setStartOnMapButton", "setEndOnMapButton",
-    "useLocationButton", "swapButton", "activeNeeds", "planButton", "plannerMessage", "resultsPanel",
+    "useLocationButton", "swapButton", "activeNeeds", "departureTime", "limitSlope", "planButton", "plannerMessage", "resultsPanel",
     "resultsTitle", "routeCards", "closeResultsButton", "avatarPickerButton", "avatarTextButton", "avatarInput",
-    "accountForm", "nameInput", "emailInput", "signOutButton", "needsForm", "savedStatus",
+    "replanNavigationButton", "unknownPolicy", "accountForm", "nameInput", "emailInput", "signOutButton", "needsForm", "savedStatus",
     "mobilityProfile", "avoidStairs", "requireCurb", "requireVerifiedCurbAccess", "preferSmooth", "requireElevator", "preferShade", "preferWellLit", "avoidRain", "minimizeTransfers",
     "maxSlope", "maxSlopeOutput", "maxWalkMinutes", "maxWalkOutput", "customNeedInput", "addCustomNeedButton",
     "customNeedList", "tripAvoidStairs", "tripRequireElevator", "tripPreferSmooth", "tripPreferShade", "tripPreferWellLit",
@@ -176,14 +186,19 @@ function cacheElements() {
 }
 
 function bindEvents() {
-  document.querySelectorAll("[data-page-target]").forEach(button => {
+  els.replanNavigationButton.addEventListener("click", () => {
+    endNavigation();
+    els.replanNavigationButton.hidden = true;
+    calculateRoutes();
+  });
+  elements("[data-page-target]").forEach(button => {
     button.addEventListener("click", () => {
       state.pageTrigger = button;
       showPage(button.dataset.pageTarget);
     });
   });
 
-  const modeButtons = [...document.querySelectorAll(".mode-chip")];
+  const modeButtons = [...buttons(".mode-chip")];
   modeButtons.forEach(button => {
     button.addEventListener("click", () => setTravelMode(button.dataset.mode));
     button.addEventListener("keydown", event => {
@@ -238,7 +253,7 @@ function bindEvents() {
   els.closeVerificationButton.addEventListener("click", closeVerificationPanel);
   els.verificationPanel.addEventListener("click", event => {
     if (event.target === els.verificationPanel) closeVerificationPanel();
-    const action = event.target.closest("[data-review-status]");
+    const action = (event.target instanceof Element ? event.target : document.body).closest("[data-review-status]");
     if (action) reviewSegment(action.dataset.edgeId, action.dataset.reviewStatus);
   });
   els.verificationPanel.addEventListener("keydown", trapVerificationFocus);
@@ -255,6 +270,14 @@ function bindEvents() {
   els.avatarTextButton.addEventListener("click", () => els.avatarInput.click());
   els.avatarInput.addEventListener("change", updateAvatar);
   els.needsForm.addEventListener("submit", saveDefaultNeeds);
+  els.departureTime.addEventListener("change", () => {
+    state.routeSession.cancel();
+    state.routes = [];
+    clearSelectedRoute();
+    closeResultsPanel({ restoreFocus: false });
+    setPlannerMessage("Departure time updated. Find routes to apply it.", "neutral");
+  });
+  els.limitSlope.addEventListener("change", updateSliderOutputs);
   els.mobilityProfile.addEventListener("change", applySelectedMobilityPreset);
   els.maxSlope.addEventListener("input", updateSliderOutputs);
   els.maxWalkMinutes.addEventListener("input", updateSliderOutputs);
@@ -267,14 +290,14 @@ function bindEvents() {
   });
 
   document.addEventListener("click", event => {
-    if (!event.target.closest(".search-control")) state.searchController.hideAll();
+    if (!(event.target instanceof Element ? event.target : document.body).closest(".search-control")) state.searchController.hideAll();
   });
   document.addEventListener("keydown", event => {
     if (event.key === "Escape" && state.mapPickType) cancelMapPointSelection();
     if (event.key === "Escape" && !els.verificationPanel.hidden) closeVerificationPanel();
   });
   document.addEventListener("pathforall-storage-error", event => {
-    const message = event.detail?.message || "Browser storage is unavailable.";
+    const message = (event instanceof CustomEvent ? event.detail?.message : null) || "Browser storage is unavailable.";
     els.storageStatus.textContent = message;
     setPlannerMessage(message, "warning");
   });
@@ -282,14 +305,14 @@ function bindEvents() {
 
 function showPage(pageName) {
   const keepsMapVisible = pageName === "saved" || pageName === "profile";
-  document.querySelectorAll(".page").forEach(page => {
+  elements(".page").forEach(page => {
     const visible = page.dataset.page === pageName || (keepsMapVisible && page.dataset.page === "navigate");
     const background = keepsMapVisible && page.dataset.page === "navigate";
     page.classList.toggle("active", visible);
     page.inert = background;
     page.setAttribute("aria-hidden", String(!visible || background));
   });
-  document.querySelectorAll(".bottom-nav-button").forEach(button => {
+  elements(".bottom-nav-button").forEach(button => {
     const active = button.dataset.pageTarget === pageName;
     button.classList.toggle("active", active);
     button.setAttribute("aria-current", active ? "page" : "false");
@@ -328,7 +351,7 @@ function closeResultsPanel(options = {}) {
 }
 
 function setTravelMode(mode) {
-  const requestedButton = document.querySelector(`.mode-chip[data-mode="${mode}"]`);
+  const requestedButton = buttons(`.mode-chip[data-mode="${mode}"]`)[0];
   if (mode !== "walk" && requestedButton?.disabled) {
     setPlannerMessage(
       "This transit mode requires a connected route or transit service. Check Profile → Data sources or continue with Walk.",
@@ -338,7 +361,7 @@ function setTravelMode(mode) {
   }
   state.routeSession.cancel();
   state.travelMode = mode;
-  document.querySelectorAll(".mode-chip").forEach(button => {
+  buttons(".mode-chip").forEach(button => {
     const active = button.dataset.mode === mode;
     button.classList.toggle("active", active);
     button.setAttribute("aria-checked", String(active));
@@ -349,7 +372,7 @@ function setTravelMode(mode) {
   els.startNavigationButton.disabled = true;
   els.saveRouteButton.disabled = true;
   closeResultsPanel({ restoreFocus: false });
-  const label = mode === "walk" ? "walking" : mode === "ferry" ? "authorized ferry" : `${mode} transit`;
+  const label = modeLabel(mode);
   setPlannerMessage(`Ready to find ${label} routes.`, "neutral");
   requestMapResize();
 }
@@ -400,7 +423,7 @@ function toggleMapPointSelection(type) {
 }
 
 function beginMapPointSelection(type) {
-  const plannerSheet = document.querySelector(".planner-sheet");
+  const plannerSheet = elements(".planner-sheet")[0];
   if (!state.mapPickType) {
     state.mapPickSnapshot = {
       plannerContentHidden: els.plannerContent.hidden,
@@ -452,7 +475,7 @@ function restorePlannerAfterMapPick() {
   const snapshot = state.mapPickSnapshot;
   state.mapPickSnapshot = null;
   if (!snapshot) return;
-  const plannerSheet = document.querySelector(".planner-sheet");
+  const plannerSheet = elements(".planner-sheet")[0];
   els.plannerContent.hidden = snapshot.plannerContentHidden;
   els.sheetToggleButton.setAttribute("aria-expanded", snapshot.sheetExpanded || String(!snapshot.plannerContentHidden));
   plannerSheet.classList.toggle("collapsed", snapshot.sheetCollapsed);
@@ -533,31 +556,12 @@ function swapEndpoints() {
 }
 
 function initializeMap() {
-  state.map = new maplibregl.Map({
-    container: "map",
-    style: {
-      version: 8,
-      sources: {
-        osm: {
-          type: "raster",
-          tiles: ["https://tile.openstreetmap.org/{z}/{x}/{y}.png"],
-          tileSize: 256,
-          attribution: "© OpenStreetMap contributors"
-        }
-      },
-      layers: [{ id: "osm", type: "raster", source: "osm" }]
-    },
-    center: NYC_CENTER,
-    zoom: 10.2,
-    maxZoom: 19,
-    attributionControl: true
-  });
+  state.map = createBaseMap();
 
-  state.map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "bottom-right");
   state.map.on("click", handleMapPointClick);
   state.map.on("load", () => {
     state.mapLoaded = true;
-    setMapMessage("Map ready · choose two places to load accessible street data", "success");
+    setMapMessage("Map ready · choose a start and destination", "success");
     addRouteLayers();
     updateEndpointMarker("start");
     updateEndpointMarker("end");
@@ -572,8 +576,8 @@ async function ensureRouteNetwork(options = {}) {
   const end = state.endPlace?.coordinates;
   if (!start || !end) return false;
   const corridor = buildRouteCorridor(start, end);
-  const corridorKey = corridor.points.map(point => point.map(value => value.toFixed(3)).join(",")).join("|");
-  if (state.networkReady && state.networkCorridorKey === corridorKey) return true;
+  const corridorKey = JSON.stringify({ start, end, needs: getEffectiveNeeds() });
+  if (state.networkReady && state.networkCorridorKey === corridorKey && Date.now() - state.networkLoadedAt < 300_000) return true;
   return loadStreetNetwork(corridor, { ...options, corridorKey });
 }
 
@@ -589,7 +593,7 @@ async function loadStreetNetwork(corridor, options = {}) {
     const live = await loadLiveOsmGraph(corridor, {
       timeoutMs: 28000,
       signal: controller.signal,
-      preserveComponents: ["ferry", "mixed"].includes(state.travelMode) && isFerryRequiredDestination(state.endPlace)
+      preserveComponents: true
     });
     if (controller.signal.aborted) return false;
     const endpointGraph = connectRouteEndpoints(
@@ -598,7 +602,6 @@ async function loadStreetNetwork(corridor, options = {}) {
       state.startPlace,
       state.endPlace,
       {
-        maxProjectionDistanceMeters: 40,
         maxProjectionDistanceMeters: 3,
         maxAccessPointDistanceMeters: 160,
         accessPoints: live.accessPoints,
@@ -623,11 +626,12 @@ async function loadStreetNetwork(corridor, options = {}) {
     state.endId = endpointGraph.endId;
     state.endpointConnections = endpointGraph.endpointConnections || {};
     state.networkSource = "live";
+    state.networkProvenance = live.provenance;
     setNetworkBadge(`${Object.keys(state.nodes).length.toLocaleString()} OSM nodes`, "success");
     setMapMessage("Live OSM pedestrian graph connected", "success");
   } catch (error) {
     if (controller.signal.aborted || error?.name === "AbortError") return false;
-    console.warn(error);
+    state.networkFailure = error;
     state.nodes = {};
     state.edges = [];
     state.endpointConnections = {};
@@ -635,8 +639,12 @@ async function loadStreetNetwork(corridor, options = {}) {
     setNetworkBadge("Street data unavailable", "warning");
     setMapMessage("Street data could not be loaded for this route corridor", "warning");
     return false;
+  } finally {
+    options.signal?.removeEventListener("abort", abortFromRoute);
   }
 
+  state.networkFailure = null;
+  state.networkLoadedAt = Date.now();
   state.networkReady = true;
   state.networkCorridorKey = options.corridorKey || null;
   refreshTransitCapabilities({ silent: true });
@@ -695,6 +703,10 @@ function addRouteLayers() {
     state.map.addSource("selected-subway", { type: "geojson", data: emptyFeatureCollection() });
     state.map.addLayer({ id: "selected-subway", type: "line", source: "selected-subway", paint: { "line-color": "#3155d8", "line-width": 7, "line-opacity": .95 } });
   }
+  if (!state.map.getSource("selected-rail")) {
+    state.map.addSource("selected-rail", { type: "geojson", data: emptyFeatureCollection() });
+    state.map.addLayer({ id: "selected-rail", type: "line", source: "selected-rail", paint: { "line-color": "#a94416", "line-width": 7, "line-opacity": .95 } });
+  }
   if (!state.map.getSource("selected-ferry")) {
     state.map.addSource("selected-ferry", { type: "geojson", data: emptyFeatureCollection() });
     state.map.addLayer({
@@ -717,6 +729,11 @@ async function calculateRoutes(options = {}) {
     setPlannerMessage("Choose both a starting point and destination before finding a route.", "warning");
     return;
   }
+  const departure = calculationOptions.navigationReroute || !els.departureTime.value ? new Date().toISOString() : agencyDeparture(els.departureTime.value);
+  if (!departure) {
+    setPlannerMessage("Choose an unambiguous departure time in New York. A daylight-saving change may skip or repeat this time.", "warning");
+    return;
+  }
   applyTemporaryNeeds(false);
   const needs = getEffectiveNeeds();
   const previousRouteState = calculationOptions.navigationReroute ? {
@@ -728,15 +745,12 @@ async function calculateRoutes(options = {}) {
   } : null;
   const request = state.routeSession.begin();
   setPlannerMessage("Calculating personalized routes…", "neutral");
-  els.planButton.disabled = true;
-  els.planButton.setAttribute("aria-busy", "true");
-  els.resultsPanel.setAttribute("aria-busy", "true");
   els.startNavigationButton.disabled = true;
 
   try {
     // Transit, alert, elevator, and arrival state can change independently.
     // Route responses are deliberately not cached in the browser.
-    const plannedRoutes = await planRouteOptions({ needs, request });
+    const plannedRoutes = await planRouteOptions({ needs, request, departure });
     if (!request.isCurrent()) return;
 
     if (!plannedRoutes.length) {
@@ -775,7 +789,7 @@ async function calculateRoutes(options = {}) {
       requestMapResize();
     }
     els.startNavigationButton.disabled = false;
-    setPlannerMessage(`${state.routes.length} accessible option${state.routes.length === 1 ? "" : "s"} found.`, "success");
+    setPlannerMessage(`${state.routes.length} route option${state.routes.length === 1 ? "" : "s"} found.`, "success");
     if (calculationOptions.navigationReroute) {
       state.navigation.rerouteState = "succeeded";
       resumeNavigationAfterReroute();
@@ -791,27 +805,30 @@ async function calculateRoutes(options = {}) {
       setNavigationMessage("Rerouting failed because no verified replacement was available. The previous route remains visible.");
       return false;
     }
-    els.routeCards.innerHTML = '<div class="empty-card"><strong>Route unavailable</strong><span>We could not find a verified street-aligned route for these locations. Your selected places are still on the map.</span></div>';
+    const providerMessage = error instanceof TransitProviderError
+      ? TRANSIT_ERROR_MESSAGES[error.code] || "Transit information is unavailable for this route."
+      : null;
+    const message = error instanceof RouteAvailabilityError
+      ? error.message
+      : providerMessage || "Route calculation is unavailable right now. Your selected places are still on the map.";
+    els.routeCards.innerHTML = `<div class="empty-card"><strong>Route unavailable</strong><span>${escapeHtml(message)}</span></div>`;
     els.resultsTitle.textContent = "Route unavailable";
     if (!calculationOptions.navigationReroute) {
       openResultsPanel();
       requestMapResize();
     }
     clearSelectedRoute();
-    const providerMessage = error instanceof TransitProviderError
-      ? TRANSIT_ERROR_MESSAGES[error.code] || "Transit information is unavailable for this route."
-      : null;
-    setPlannerMessage(error instanceof RouteAvailabilityError
-      ? error.message
-      : providerMessage || "Route calculation is unavailable right now. Your selected places are still on the map.", "warning");
+    setPlannerMessage(message, "warning");
     return false;
   } finally {
-    if (request.isCurrent()) {
-      els.planButton.disabled = false;
-      els.planButton.setAttribute("aria-busy", "false");
-      els.resultsPanel.setAttribute("aria-busy", "false");
-    }
+    request.finish();
   }
+}
+
+function setPlanningBusy(busy) {
+  els.planButton.disabled = busy;
+  els.planButton.setAttribute("aria-busy", String(busy));
+  els.resultsPanel.setAttribute("aria-busy", String(busy));
 }
 
 function restorePreviousRouteState(snapshot) {
@@ -832,17 +849,19 @@ class RouteAvailabilityError extends Error {
   }
 }
 
-async function planRouteOptions({ needs, request }) {
+async function planRouteOptions({ needs, request, departure }) {
   const mode = state.travelMode;
   const ferryDestination = resolveFerryDestination(state.endPlace);
   if (ferryDestination && !["ferry", "mixed"].includes(mode)) {
     throw new RouteAvailabilityError(
-      `${ferryDestination.name} requires Statue City Cruises. Choose Ferry or Mixed mode.`,
+      `${ferryDestination.name} requires Statue City Cruises. Choose Ferry or All Transit.`,
       "FERRY_REQUIRED"
     );
   }
 
-  const capabilities = await ensureRoutingCapabilities(request.signal);
+  const capabilities = mode === "walk" && !state.routeProviderCapabilities?.available
+    ? (state.routeProviderCapabilities || configuredRoutingCapabilities({ url: "" }))
+    : await ensureRoutingCapabilities();
   if (!request.isCurrent()) return [];
   const selectedSource = routeSourceForMode(mode, capabilities, { transitNetwork: hasTransitNetworkService() });
   let providerFailure = null;
@@ -853,7 +872,7 @@ async function planRouteOptions({ needs, request }) {
         end: state.endPlace,
         needs,
         mode,
-        departureTime: new Date(),
+        departureTime: new Date(departure),
         signal: request.signal
       }, { capabilities });
       if (!request.isCurrent()) return [];
@@ -870,9 +889,10 @@ async function planRouteOptions({ needs, request }) {
         const enriched = (await Promise.all(routes.map(route => enrichRoute(route, request)))).filter(Boolean);
         return rankRoutesAfterArrivals(enriched, needs).routes;
       }
-      providerFailure = new TransitProviderError("NO_SERVICE_AT_THIS_TIME", "The route provider returned no usable itinerary for this mode.");
+      providerFailure = new TransitProviderError("NO_FEASIBLE_ROUTE");
     } catch (error) {
-      if (error?.name === "AbortError") throw error;
+      if (error?.name === "AbortError" || !request.isCurrent()) throw error;
+      if (["PROVIDER_UNAVAILABLE", "PROVIDER_TIMEOUT", "PROVIDER_CONTRACT_ERROR", "TRANSIT_DATA_STALE"].includes(error?.code))
       state.transitConnectionObservations.routeProviderState = {
         status: error?.code === "TRANSIT_DATA_STALE" ? "Stale" : "Unavailable",
         source: capabilities.source,
@@ -887,14 +907,14 @@ async function planRouteOptions({ needs, request }) {
     if (mode === "ferry" && ferryDestination) {
       throw new RouteAvailabilityError(ferryUnavailableMessage(ferryDestination), "FERRY_SCHEDULE_UNAVAILABLE");
     }
-    throw new RouteAvailabilityError("Accessible transit routing is currently unavailable. Try walking mode or try again later.");
+    throw new TransitProviderError(capabilities.code || (capabilities.checked ? "PROVIDER_UNAVAILABLE" : "TRANSIT_NOT_CONFIGURED"));
   }
 
   const networkLoaded = await ensureRouteNetwork({ signal: request.signal });
   if (!request.isCurrent()) return [];
   if (!networkLoaded || !state.startId || !state.endId) throw new RouteAvailabilityError(
-    "A verified pedestrian connection to one of the selected places is unavailable. Choose a point directly on a mapped pedestrian path or use a connected routing provider.",
-    "ENDPOINT_CONNECTOR_UNAVAILABLE"
+    state.networkFailure instanceof RouteAvailabilityError ? state.networkFailure.message : "Pedestrian map data could not be retrieved. Try again when the provider is available.",
+    state.networkFailure instanceof RouteAvailabilityError ? state.networkFailure.code : mode === "walk" ? "PEDESTRIAN_PROVIDER_UNAVAILABLE" : "ENDPOINT_CONNECTOR_UNAVAILABLE"
   );
   if (state.startId === state.endId) throw new RouteAvailabilityError("Choose two different places to find a route.");
   if (mode === "walk") {
@@ -907,11 +927,18 @@ async function planRouteOptions({ needs, request }) {
       state.weather,
       { departureTime: new Date() }
     );
+    if (!planned.some(item => item.route)) {
+      const diagnosis = diagnoseNoRoute(state.nodes, state.edges, state.startId, state.endId, needs, state.weather);
+      throw new RouteAvailabilityError(diagnosis.message, diagnosis.code);
+    }
     return Promise.all(planned.map(item => normalizeWalkingRoute(item, {
       nodes: state.nodes,
       edges: state.edges,
+      needs,
       start: state.startPlace,
       end: state.endPlace,
+      provenance: state.networkProvenance,
+      retrievedAt: state.networkProvenance?.retrievedAt,
       endpointConnections: state.endpointConnections,
       trust: summarizeRouteTrust(item.route, state.edges)
     })).filter(Boolean).map(route => enrichRoute(route, request))).then(routes => routes.filter(Boolean));
@@ -919,10 +946,12 @@ async function planRouteOptions({ needs, request }) {
 
   let network = null;
   try {
-    network = await ensureTransitNetwork(request.signal, mode, needs);
+    network = await ensureTransitNetwork(request.signal, mode, needs, departure);
   } catch (error) {
     if (error?.name === "AbortError") throw error;
-    if (providerFailure) throw providerFailure;
+    if (providerFailure) throw new TransitProviderError(error?.code || "PROVIDER_UNAVAILABLE", undefined, {
+      attempts: [providerFailure.code, error?.code || "PROVIDER_UNAVAILABLE"]
+    });
     throw error;
   }
   if (!request.isCurrent()) return [];
@@ -935,6 +964,7 @@ async function planRouteOptions({ needs, request }) {
     maxSnapDistanceMeters: network.maxSnapDistanceMeters,
     maxConnectorDistanceMeters: network.maxConnectorDistanceMeters
   });
+  const diagnostics = { code: "" };
   const localRoutes = planTransitRoutes({
     pedestrianNodes: state.nodes,
     pedestrianEdges: state.edges,
@@ -945,21 +975,19 @@ async function planRouteOptions({ needs, request }) {
     mode,
     transitStops: stops,
     transitEdges: network.edges,
-    departureTime: new Date(),
+    departureTime: new Date(departure),
+    diagnostics,
     candidateSearch: network.candidateSearch
   });
-  if (!localRoutes.length && providerFailure) throw providerFailure;
-  if (!localRoutes.length && mode === "ferry" && ferryDestination) throw new RouteAvailabilityError(ferryUnavailableMessage(ferryDestination), "FERRY_SCHEDULE_UNAVAILABLE");
   if (!localRoutes.length) {
-    const code = mode === "bus" ? "NO_NEARBY_BUS_STOP"
-      : mode === "subway" ? "NO_ACCESSIBLE_STATION"
-        : mode === "mixed" ? "NO_VALID_TRANSFER"
-          : "NO_SERVICE_AT_THIS_TIME";
-    throw new RouteAvailabilityError(TRANSIT_ERROR_MESSAGES[code], code);
+    throw new TransitProviderError(diagnostics.code || "NO_FEASIBLE_ROUTE", undefined, {
+      attempts: providerFailure ? [providerFailure.code, diagnostics.code] : [diagnostics.code]
+    });
   }
   const enrichedRoutes = (await Promise.all(localRoutes.map(itinerary => {
     const route = normalizeLocalTransitRoute(itinerary, {
       mode,
+      needs,
       start: state.startPlace,
       end: state.endPlace,
       pedestrianNodes: state.nodes,
@@ -978,10 +1006,11 @@ async function planRouteOptions({ needs, request }) {
     });
     return route ? enrichRoute(route, request) : null;
   }))).filter(Boolean);
+  if (!enrichedRoutes.length && request.isCurrent()) throw new TransitProviderError("PROVIDER_CONTRACT_ERROR");
   return rankRoutesAfterArrivals(enrichedRoutes, needs).routes;
 }
 
-async function ensureTransitNetwork(signal, mode, needs) {
+async function ensureTransitNetwork(signal, mode, needs, departure) {
   if (!hasTransitNetworkService()) return null;
   try {
     const network = await loadTransitNetwork({
@@ -990,8 +1019,9 @@ async function ensureTransitNetwork(signal, mode, needs) {
       end: state.endPlace.coordinates,
       mode,
       maxWalkMinutes: needs.maxWalkMinutes,
-      departureTime: new Date()
+      departureTime: new Date(departure)
     });
+    if (signal.aborted) throw new DOMException("Request cancelled", "AbortError");
     state.networkSource = "transit-provider";
     state.transitConnectionObservations.transitNetworkState = {
       status: "Connected",
@@ -1017,15 +1047,17 @@ async function ensureTransitNetwork(signal, mode, needs) {
   }
 }
 
-async function ensureRoutingCapabilities(signal) {
+async function ensureRoutingCapabilities() {
   if (!hasAccessibleRoutingService()) {
     state.routeProviderCapabilities = configuredRoutingCapabilities({ url: "" });
     renderTransitConnectionStatus();
     return state.routeProviderCapabilities;
   }
+  if (state.routeProviderCapabilities?.checked && Date.now() - state.lastCapabilityCheck < 25_000) return state.routeProviderCapabilities;
   if (!state.routeProviderCapabilitiesPromise) {
-    state.routeProviderCapabilitiesPromise = loadRoutingCapabilities({ signal })
+    state.routeProviderCapabilitiesPromise = loadRoutingCapabilities()
       .then(capabilities => {
+        state.lastCapabilityCheck = Date.now();
         state.routeProviderCapabilities = capabilities;
         renderTransitConnectionStatus();
         return capabilities;
@@ -1109,8 +1141,8 @@ function renderSavedRoutes() {
 }
 
 function handleSavedRouteAction(event) {
-  const useButton = event.target.closest("[data-use-saved-route]");
-  const removeButton = event.target.closest("[data-remove-saved-route]");
+  const useButton = (event.target instanceof Element ? event.target : document.body).closest("[data-use-saved-route]");
+  const removeButton = (event.target instanceof Element ? event.target : document.body).closest("[data-remove-saved-route]");
   if (removeButton) {
     try {
       state.savedRoutes = removeSavedRoute(removeButton.dataset.removeSavedRoute);
@@ -1126,6 +1158,7 @@ function handleSavedRouteAction(event) {
   if (!item?.start?.coordinates?.length || !item?.end?.coordinates?.length) return;
   selectPlace("start", item.start);
   selectPlace("end", item.end);
+  setTravelMode(item.requestedMode || item.mode || "walk");
   showPage("navigate");
   setPlannerMessage("Saved route loaded. Find routes to refresh current accessibility and transit information.", "neutral");
 }
@@ -1137,6 +1170,7 @@ function drawSelectedRoute(route) {
   state.map.getSource("selected-bus")?.setData(grouped.bus);
   state.map.getSource("selected-subway")?.setData(grouped.subway);
   state.map.getSource("selected-ferry")?.setData(grouped.ferry);
+  state.map.getSource("selected-rail")?.setData(grouped.rail);
   drawTransitStopMarkers(route);
 
   const allCoordinates = Object.values(grouped).flatMap(collection => collection.features).flatMap(feature => feature.geometry.coordinates);
@@ -1154,7 +1188,7 @@ function clearSelectedRoute() {
   if (els.reviewSegmentsButton) els.reviewSegmentsButton.disabled = true;
   if (els.saveRouteButton) els.saveRouteButton.disabled = true;
   if (!state.mapLoaded) return;
-  ["selected-walk", "selected-bus", "selected-subway", "selected-ferry"].forEach(id => state.map.getSource(id)?.setData(emptyFeatureCollection()));
+  ["selected-walk", "selected-bus", "selected-subway", "selected-ferry", "selected-rail"].forEach(id => state.map.getSource(id)?.setData(emptyFeatureCollection()));
   clearTransitStopMarkers();
 }
 
@@ -1180,36 +1214,7 @@ function clearTransitStopMarkers() {
   state.transitStopMarkers = [];
 }
 
-function getEffectiveNeeds() {
-  const needs = JSON.parse(JSON.stringify(state.profile.needs));
-  applyNeedTextsToObject(needs, needs.customNeeds || []);
-
-  const trip = state.tripNeeds;
-  ["avoidStairs", "requireElevator", "preferSmooth", "preferShade", "preferWellLit", "avoidRain", "minimizeTransfers", "requireCurb", "requireVerifiedCurbAccess", "wheelchairMode"]
-    .forEach(key => {
-      if (trip[key] === true) needs[key] = true;
-    });
-  if (Number.isFinite(trip.maxSlope)) needs.maxSlope = Math.min(needs.maxSlope, trip.maxSlope);
-  needs.customNeeds = [...(needs.customNeeds || []), ...(trip.customNeeds || [])];
-  applyNeedTextsToObject(needs, trip.customNeeds || []);
-  return needs;
-}
-
-function emptyTripNeeds() {
-  return {
-    avoidStairs: false,
-    requireElevator: false,
-    preferSmooth: false,
-    preferShade: false,
-    preferWellLit: false,
-    avoidRain: false,
-    minimizeTransfers: false,
-    requireCurb: false,
-    wheelchairMode: false,
-    maxSlope: null,
-    customNeeds: []
-  };
-}
+function getEffectiveNeeds() { return effectiveNeeds(state.profile.needs, state.tripNeeds); }
 
 function applyTemporaryNeeds(invalidateRoutes = true) {
   const trip = emptyTripNeeds();
@@ -1263,31 +1268,6 @@ function renderTemporaryNeeds() {
   if (Number.isFinite(needs.maxSlope)) labels.push(`Slope ≤ ${needs.maxSlope}%`);
   if (needs.customNeeds?.length) labels.push("Natural-language request applied");
   els.tripNeedsSummary.innerHTML = labels.map(label => `<span class="need-chip">${escapeHtml(label)}</span>`).join("");
-}
-
-function applyNeedTextsToObject(needs, texts) {
-  for (const value of texts || []) {
-    const text = String(value).toLowerCase();
-    if (/wheelchair|wheel chair|轮椅|silla de ruedas/.test(text)) {
-      needs.wheelchairMode = true;
-      needs.avoidStairs = true;
-      needs.requireCurb = true;
-      needs.requireElevator = true;
-    }
-    if (/stairs|steps|step-free|楼梯|台阶|escaleras/.test(text)) needs.avoidStairs = true;
-    if (/elevator|lift|电梯|ascensor/.test(text)) needs.requireElevator = true;
-    if (/curb|kerb|坡道|路缘|rampa/.test(text)) needs.requireCurb = true;
-    if (/rough|uneven|smooth|surface|颠簸|平滑|路面|superficie/.test(text)) needs.preferSmooth = true;
-    if (/shade|heat|sun|阴凉|遮阴|高温|sombra|calor/.test(text)) needs.preferShade = true;
-    if (/well[- ]?lit|better[- ]?lit|lighting|bright(er)? route|照明|iluminad/.test(text)) needs.preferWellLit = true;
-    if (/rain|covered|dry|下雨|避雨|有顶棚|lluvia|cubierto/.test(text)) needs.avoidRain = true;
-    if (/transfer|crowd|少换乘|拥挤|换乘|transbordo|multitud/.test(text)) needs.minimizeTransfers = true;
-    const slope = text.match(/(?:slope|incline|坡度|斜坡|pendiente)[^0-9]{0,14}(\d{1,2})\s*%?/);
-    if (slope) {
-      const value = Math.min(12, Math.max(2, Number(slope[1])));
-      needs.maxSlope = Number.isFinite(needs.maxSlope) ? Math.min(needs.maxSlope, value) : value;
-    }
-  }
 }
 
 function startVoiceNeedsInput() {
@@ -1344,17 +1324,27 @@ function startNavigation() {
   state.navigation.rerouteState = "idle";
   state.navigation.selectedRouteKey = route.id || null;
   state.navigation.completedRecorded = false;
-  recordPilotEvent("navigation_started", { mode: route.mode, routeKey: route.id || null });
+  state.navigation.gpsStarted = false;
   renderPilotMetrics();
 
   document.body.classList.add("navigation-active");
   els.navigationOverlay.hidden = false;
+  els.replanNavigationButton.hidden = true;
+  els.navigationInstruction.setAttribute("tabindex", "-1");
+  els.navigationInstruction.focus();
   closeResultsPanel({ restoreFocus: false });
   setTimeout(() => state.map?.resize(), 40);
   updateCurrentLocationMarker(state.navigation.currentPosition);
   updateNavigationUI();
   recenterNavigation();
-  state.navigation.clockTimer = setInterval(updateNavigationUI, 30000);
+  state.navigation.clockTimer = setInterval(() => {
+    const activeRoute = state.routes.find(candidate => candidate.id === state.navigation.selectedRouteKey);
+    if (activeRoute) {
+      const check = navigationStartCheck(activeRoute);
+      if (!check.valid) { setNavigationMessage(check.message); els.replanNavigationButton.hidden = false; }
+    }
+    updateNavigationUI();
+  }, 30000);
   if (route.mode !== "walk") {
     state.navigation.arrivalTimer = setInterval(refreshNavigationArrivals, 60_000);
   }
@@ -1369,14 +1359,24 @@ function startNavigation() {
   }
 
   state.navigation.watchId = navigator.geolocation.watchPosition(
-    position => updateLiveNavigationPosition(position),
-    error => setNavigationMessage(`GPS unavailable: ${error.message}. Route preview is still available.`),
+    position => {
+      if (!state.navigation.active || state.navigation.demoTimer) return;
+      if (!state.navigation.gpsStarted) {
+        state.navigation.gpsStarted = true;
+        recordPilotEvent("navigation_started", { mode: route.mode, source: "gps" });
+        renderPilotMetrics();
+      }
+      updateLiveNavigationPosition(position);
+    },
+    error => { if (state.navigation.active) setNavigationMessage(`GPS unavailable: ${error.message}. Route preview is still available.`); },
     { enableHighAccuracy: true, timeout: 15000, maximumAge: 1000 }
   );
   setNavigationMessage("Live GPS started. Keep the screen open while navigating.");
 }
 
 function navigationStartCheck(route) {
+  const validation = validateRouteOption(route, { needs: getEffectiveNeeds() });
+  if (!validation.valid) return { valid: false, message: `Replan this route: ${validation.reasons[0]}` };
   if (route.mode === "walk") return { valid: true };
   if (route.dataFreshness !== "current") {
     return { valid: false, message: "Transit data is not current. Refresh the route before navigation." };
@@ -1405,6 +1405,7 @@ async function refreshNavigationArrivals() {
         : "Arrival refresh unavailable. Follow the verified schedule and replan if service changes.");
       return;
     }
+    if (state.navigation.selectedRouteKey !== route.id || state.routes[index]?.id !== route.id) return;
     const refreshed = attachArrivalData(route, arrivals);
     state.routes[index] = refreshed;
     state.navigation.steps = buildRouteNavigationSteps(refreshed, state.endPlace.name);
@@ -1453,9 +1454,9 @@ function updateNavigationUI() {
   renderUpcomingNavigationSteps();
   speakNavigationStep(step);
   if (step.type === "arrive" && distance < 25) {
-    const recorded = recordNavigationCompletionOnce(navigation, recordPilotEvent, {
+    const recorded = recordNavigationCompletionOnce(navigation, recordCompletedJourney, {
       mode: state.travelMode,
-      source: Number.isFinite(navigation.accuracy) ? "gps" : "demo"
+      source: Number.isFinite(navigation.accuracy) && !navigation.demoTimer ? "gps" : "preview"
     });
     if (recorded) renderPilotMetrics();
   }
@@ -1528,7 +1529,7 @@ function toggleDemoMovement() {
       } else {
         state.navigation.stepIndex = state.navigation.steps.length - 1;
         updateNavigationUI();
-        const recorded = recordNavigationCompletionOnce(state.navigation, recordPilotEvent, { mode: state.travelMode, source: "demo" });
+        const recorded = recordNavigationCompletionOnce(state.navigation, recordCompletedJourney, { mode: state.travelMode, source: "preview" });
         if (recorded) renderPilotMetrics();
         setNavigationMessage("Route preview completed.");
       }
@@ -1563,6 +1564,7 @@ function endNavigation() {
   state.navigation.currentMarker?.remove();
   state.navigation.currentMarker = null;
   els.navigationOverlay.hidden = true;
+  els.startNavigationButton.focus();
   document.body.classList.remove("navigation-active");
   window.speechSynthesis?.cancel();
   if (state.map) {
@@ -1702,20 +1704,18 @@ function updateTransitModeAvailability(report, routeCapabilities) {
     routeCapabilities,
     state.transitConnectionObservations.transitNetworkState
   );
-  let selectedModeDisabled = false;
-  document.querySelectorAll(".mode-chip").forEach(button => {
+  buttons(".mode-chip").forEach(button => {
     const mode = button.dataset.mode;
     const available = availability[mode] === true;
     button.disabled = !available;
     button.setAttribute("aria-disabled", String(!available));
     if (!available) button.tabIndex = -1;
-    if (button.getAttribute("aria-checked") === "true" && !available) selectedModeDisabled = true;
+
   });
-  if (selectedModeDisabled) setTravelMode("walk");
-  const enabledTransitModes = ["bus", "subway", "ferry", "mixed"].filter(mode => availability[mode]);
+  const enabledTransitModes = ["bus", "subway", "ferry", "rail", "mixed"].filter(mode => availability[mode]);
   els.transitModeAvailability.textContent = enabledTransitModes.length
-    ? `Configured services allow ${enabledTransitModes.map(capitalize).join(", ")} routing. Connection rows distinguish verified, stale, and unverified services.`
-    : "Walk uses OSM data. Connect an application-owned transit service to use Bus, Subway, Ferry, or Mixed routing.";
+    ? `Configured services allow ${enabledTransitModes.map(modeLabel).join(", ")} routing. Connection rows distinguish verified, stale, and unverified services.`
+    : "Walk uses OSM data. Connect an application-owned transit service to use Bus, Subway, Ferry, Rail, or All Transit routing.";
 }
 
 function setConnectionBadge(status) {
@@ -1747,9 +1747,7 @@ async function copyTransitDiagnostics() {
   }
 }
 
-function capitalize(value) {
-  return String(value).charAt(0).toUpperCase() + String(value).slice(1);
-}
+
 
 function renderRouteTrust(route) {
   if (!route) {
@@ -1761,7 +1759,7 @@ function renderRouteTrust(route) {
   const sourceLabels = Object.entries(trust.sources || {}).map(([source, count]) => `${sourceLabel(source)} ${count}`).join(" · ");
   els.routeTrustSummary.hidden = false;
   els.routeTrustSummary.innerHTML = `
-    <div><span class="section-kicker">DATA COVERAGE</span><strong>${escapeHtml(trust.coverageLevel || "Limited coverage")}</strong><small>${formatDistance(trust.reviewedDistance || 0)} locally reviewed · ${trust.unknownSegments} critical unknown segment${trust.unknownSegments === 1 ? "" : "s"}</small></div>
+    <div><span class="section-kicker">DATA COVERAGE</span><strong>${escapeHtml(route.evidence?.status === "unknown" ? "Required evidence missing" : "Mapped evidence available")}</strong><small>${formatDistance(trust.reviewedDistance || 0)} locally reviewed · ${Math.round(route.evidence?.unknownDistanceMeters || 0)} m with required evidence missing · ${route.evidence?.unknownEvents || 0} boarding evidence gaps</small></div>
     <div class="trust-source-row">${escapeHtml(sourceLabels || "No walking data")}</div>
     <p>${trust.barrierSegments ? "A local review records a barrier on this route; recalculate before navigation." : "Coverage describes mapped fields, not the probability of successful or safe passage. Unknown does not mean accessible."}</p>`;
 }
@@ -1790,14 +1788,14 @@ function openVerificationPanel() {
     </article>`;
   }).join("");
   state.dialogTrigger = document.activeElement;
-  document.querySelector(".app-frame").inert = true;
+  elements(".app-frame")[0].inert = true;
   els.verificationPanel.hidden = false;
   setTimeout(() => document.getElementById("verificationTitle")?.focus(), 0);
 }
 
 function closeVerificationPanel() {
   els.verificationPanel.hidden = true;
-  document.querySelector(".app-frame").inert = false;
+  elements(".app-frame")[0].inert = false;
   if (state.dialogTrigger && document.contains(state.dialogTrigger)) state.dialogTrigger.focus();
   state.dialogTrigger = null;
 }
@@ -1924,7 +1922,7 @@ function togglePlannerSheet() {
   els.sheetToggleButton.querySelector(".visually-hidden").textContent = collapsed
     ? "Expand trip planner"
     : "Collapse trip planner";
-  document.querySelector(".planner-sheet").classList.toggle("collapsed", collapsed);
+  elements(".planner-sheet")[0].classList.toggle("collapsed", collapsed);
   requestMapResize();
 }
 
@@ -1978,7 +1976,9 @@ function renderProfile() {
   els.mobilityProfile.value = needs.mobilityProfile || (needs.wheelchairMode ? "wheelchair" : "custom");
   ["avoidStairs", "requireCurb", "requireVerifiedCurbAccess", "preferSmooth", "requireElevator", "preferShade", "preferWellLit", "avoidRain", "minimizeTransfers"]
     .forEach(key => { els[key].checked = Boolean(needs[key]); });
-  els.maxSlope.value = needs.maxSlope;
+  els.unknownPolicy.value = needs.unknownPolicy || "strict";
+  els.limitSlope.checked = Number.isFinite(needs.maxSlope);
+  els.maxSlope.value = needs.maxSlope ?? 6;
   els.maxWalkMinutes.value = needs.maxWalkMinutes;
   state.customNeedsDraft = [...needs.customNeeds];
   updateSliderOutputs();
@@ -2063,14 +2063,14 @@ function saveDefaultNeeds(event) {
     needs: {
       ...state.profile.needs,
       mobilityProfile,
+      unknownPolicy: els.unknownPolicy.value,
       wheelchairMode: mobilityProfile === "wheelchair"
         ? true
         : mobilityProfile === "custom"
-          ? Boolean(state.profile.needs.wheelchairMode)
+          ? false
           : false,
       avoidStairs: els.avoidStairs.checked,
       requireCurb: els.requireCurb.checked,
-      curbPolicy: els.requireCurb.checked ? "preffered" : mobilityProfile === "custom" ? "allowUnknown" : "preferred",
       curbPolicy: els.requireCurb.checked ? "required" : mobilityProfile === "custom" ? "allowUnknown" : "preferred",
       requireVerifiedCurbAccess: els.requireVerifiedCurbAccess.checked,
       preferSmooth: els.preferSmooth.checked,
@@ -2079,7 +2079,7 @@ function saveDefaultNeeds(event) {
       preferWellLit: els.preferWellLit.checked,
       avoidRain: els.avoidRain.checked,
       minimizeTransfers: els.minimizeTransfers.checked,
-      maxSlope: Number(els.maxSlope.value),
+      maxSlope: els.limitSlope.checked ? Number(els.maxSlope.value) : null,
       maxWalkMinutes: Number(els.maxWalkMinutes.value),
       customNeeds: [...state.customNeedsDraft]
     }
@@ -2092,14 +2092,22 @@ function saveDefaultNeeds(event) {
   }
   els.savedStatus.textContent = "Saved just now";
   renderActiveNeeds();
-  setPlannerMessage("Your default needs will be used in every new route.", "success");
+  state.routeSession.cancel();
+  state.networkReady = false;
+  state.routes = [];
+  clearSelectedRoute();
+  if (state.navigation.active) endNavigation();
+  setPlannerMessage("Settings saved. Routes will be recalculated using these requirements.", "success");
+  if (state.startPlace && state.endPlace) calculateRoutes();
 }
 
 function applySelectedMobilityPreset() {
   const needs = applyMobilityPreset(els.mobilityProfile.value, state.profile.needs);
   ["avoidStairs", "requireCurb", "requireVerifiedCurbAccess", "preferSmooth", "requireElevator", "preferShade", "preferWellLit", "avoidRain", "minimizeTransfers"]
     .forEach(key => { els[key].checked = Boolean(needs[key]); });
-  els.maxSlope.value = needs.maxSlope;
+  els.unknownPolicy.value = needs.unknownPolicy || "strict";
+  els.limitSlope.checked = Number.isFinite(needs.maxSlope);
+  els.maxSlope.value = needs.maxSlope ?? 6;
   els.maxWalkMinutes.value = needs.maxWalkMinutes;
   updateSliderOutputs();
   els.savedStatus.textContent = "Preset applied · save to keep";
@@ -2134,7 +2142,8 @@ async function compressAvatar(file) {
 }
 
 function updateSliderOutputs() {
-  els.maxSlopeOutput.textContent = `${els.maxSlope.value}%`;
+  els.maxSlope.disabled = !els.limitSlope.checked;
+  els.maxSlopeOutput.textContent = els.limitSlope.checked ? `${els.maxSlope.value}%` : "No limit";
   els.maxWalkOutput.textContent = `${els.maxWalkMinutes.value} min`;
 }
 
@@ -2181,52 +2190,9 @@ function scheduleWeatherRefresh() {
 
 async function fetchWeather(options = {}) {
   const coordinates = state.startPlace?.coordinates;
-  if (!coordinates) {
-    state.weather = {
-      temperatureF: null,
-      precipitation: null,
-      isRaining: null,
-      source: "unavailable",
-      updatedAt: null,
-      freshness: "unknown"
-    };
-    return;
-  }
-  const url = `https://api.open-meteo.com/v1/forecast?latitude=${coordinates[1]}&longitude=${coordinates[0]}&current=temperature_2m,precipitation&temperature_unit=fahrenheit&timezone=auto`;
-  try {
-    const response = await fetchWithPolicy(url, { signal: options.signal }, {
-      timeoutMs: 9_000,
-      retries: 1,
-      source: "Open-Meteo weather"
-    });
-    if (!response.ok) throw new Error(`Weather ${response.status}`);
-    const data = await response.json();
-    const temperatureF = Number(data.current?.temperature_2m);
-    const precipitation = Number(data.current?.precipitation);
-    if (!Number.isFinite(temperatureF) || !Number.isFinite(precipitation)) throw new Error("Weather response is incomplete.");
-    const updatedAt = Number.isFinite(Date.parse(data.current?.time))
-      ? new Date(data.current.time).toISOString()
-      : new Date().toISOString();
-    state.weather = {
-      temperatureF,
-      precipitation,
-      isRaining: precipitation > 0,
-      source: "Open-Meteo",
-      updatedAt,
-      freshness: "current"
-    };
-  } catch (error) {
-    if (error?.name === "AbortError") return;
-    console.warn(error);
-    state.weather = {
-      temperatureF: null,
-      precipitation: null,
-      isRaining: null,
-      source: "unavailable",
-      updatedAt: null,
-      freshness: "unknown"
-    };
-  }
+  const key = JSON.stringify(coordinates);
+  const result = coordinates ? await loadWeather(coordinates, options) : unavailableWeather();
+  if (!options.signal?.aborted && key === JSON.stringify(state.startPlace?.coordinates)) state.weather = result;
 }
 
 function setNetworkBadge(message, status) {

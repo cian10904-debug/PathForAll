@@ -53,6 +53,8 @@ const busService = createRoutingService({
           from: point("start"),
           to: point("end"),
           routeId: "M8",
+          departureTime: "2026-11-24T15:00:00.000Z",
+          arrivalTime: "2026-11-24T15:10:00.000Z",
           durationSeconds: 600,
           distanceMeters: 1200,
           geometry: null
@@ -61,7 +63,7 @@ const busService = createRoutingService({
     })
   })
 });
-assert.equal((await busService.plan({ start: point("start"), end: point("end"), needs: {}, mode: "bus" })).length, 1, "a Bus-capable provider is used for Bus mode");
+assert.equal((await busService.plan({ start: point("start"), end: point("end"), needs: {}, mode: "bus", departureTime: new Date("2026-11-24T15:00:00Z") })).length, 1, "a Bus-capable provider is used for Bus mode");
 
 assert.equal(normalizeTransitIdentifier("MTA_308209", { agency: "mta", mode: "bus", kind: "stop" }), "mta:bus:stop:308209");
 assert.equal(normalizeTransitIdentifier("308209", { agency: "mta", mode: "bus", kind: "stop" }), "mta:bus:stop:308209");

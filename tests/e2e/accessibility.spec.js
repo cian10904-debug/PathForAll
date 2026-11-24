@@ -25,7 +25,7 @@ test("keyboard-only search, semantic route selection, and dialog focus", async (
   await end.press("Enter");
   await expect(end).toHaveValue("End path");
 
-  await page.getByRole("button", { name: "Find accessible routes" }).click();
+  await page.getByRole("button", { name: "Find routes" }).click();
   const routeCard = page.locator("article.route-card").first();
   await expect(routeCard).toBeVisible();
   await expect(routeCard.getByRole("radio")).toHaveAttribute("aria-checked", "true");
@@ -42,7 +42,7 @@ test("keyboard-only search, semantic route selection, and dialog focus", async (
   await expect(reviewButton).toBeFocused();
 
   const results = await new AxeBuilder({ page })
-    .exclude("#map")
+    .withTags(["wcag2a", "wcag2aa", "wcag21aa", "wcag22aa"])
     .analyze();
   expect(results.violations).toEqual([]);
 });
@@ -71,7 +71,7 @@ test("overlays isolate the map and responsive layouts do not overflow", async ({
 test("unconfigured transit services are explicit and transit modes stay disabled", async ({ page }) => {
   await expect(page.locator("#plannerTransitStatus")).toHaveText("Transit information unavailable");
   await expect(page.locator("#navigatePage #transitConnectionList")).toHaveCount(0);
-  for (const mode of ["Bus", "Subway", "Ferry", "Mixed"]) {
+  for (const mode of ["Bus", "Subway", "Ferry", "Rail", "All Transit"]) {
     await expect(page.getByRole("radio", { name: mode, exact: true })).toBeDisabled();
   }
   await expect(page.getByRole("radio", { name: "Walk", exact: true })).toBeEnabled();
@@ -157,7 +157,7 @@ async function installPublicServiceFixtures(page) {
     contentType: "application/json",
     body: JSON.stringify({
       current: {
-        time: "2099-01-01T12:00:00Z",
+        time: Math.floor(Date.now() / 1000),
         temperature_2m: 68,
         precipitation: 0
       }
@@ -189,9 +189,99 @@ function overpassFixture() {
       highway: "footway",
       wheelchair: "yes",
       surface: "asphalt",
+      incline: "0%",
       lit: "yes",
       name: "Accessible test path"
     }
   });
   return { elements };
 }
+
+test("missing slope evidence stays strict until the user explicitly allows unknowns", async ({ page }) => {
+  const payload = overpassFixture();
+  delete payload.elements.at(-1).tags.incline;
+  await page.route("**/api/interpreter", route => route.fulfill({ contentType: "application/json", body: JSON.stringify(payload) }));
+  await page.getByRole("button", { name: "Profile", exact: true }).click();
+  await page.locator("#limitSlope").check();
+  await page.locator("#needsForm button[type=submit]").click();
+  await page.getByRole("button", { name: "Map", exact: true }).click();
+  await selectJourney(page);
+  await page.getByRole("button", { name: "Find routes" }).click();
+  await expect(page.locator("article.route-card")).toHaveCount(0);
+  await expect(page.locator("#plannerMessage")).toContainText(/evidence|mapped|unknown/i);
+  await page.getByRole("button", { name: "Profile", exact: true }).click();
+  await page.locator("#unknownPolicy").selectOption("allow");
+  await page.locator("#needsForm button[type=submit]").click();
+  await page.getByRole("button", { name: "Map", exact: true }).click();
+  const card = page.locator("article.route-card").first();
+  await expect(card).toBeVisible();
+  await expect(card).toContainText(/unknown|missing/i);
+  await expect(page.locator("#startNavigationButton")).toBeEnabled();
+  await page.screenshot({ path: "test-results/unknown-conditions.png", fullPage: true });
+});
+
+test("navigation reports denied GPS and releases its watch on End", async ({ page }) => {
+  await page.evaluate(() => {
+    window.navigationTest = { cleared: 0 };
+    Object.defineProperty(navigator, "geolocation", { configurable: true, value: {
+      watchPosition(_success, error) { setTimeout(() => error({ code: 1, message: "Permission denied" }), 10); return 42; },
+      clearWatch(id) { if (id === 42) window.navigationTest.cleared++; }
+    }});
+  });
+  await selectJourney(page);
+  await page.getByRole("button", { name: "Find routes" }).click();
+  await expect(page.locator("article.route-card").first()).toBeVisible();
+  await page.locator("#startNavigationButton").click();
+  await expect(page.locator("#navigationOverlay")).toBeVisible();
+  await expect(page.locator("#navigationInstruction")).toBeFocused();
+  await expect(page.locator("#navigationMessage")).toContainText("Permission denied");
+  await page.locator("#endNavigationButton").click();
+  await expect(page.locator("#navigationOverlay")).toBeHidden();
+  expect(await page.evaluate(() => window.navigationTest.cleared)).toBe(1);
+});
+
+test("corrupt saved settings recover without blocking planning", async ({ page }) => {
+  await page.evaluate(() => {
+    for (const key of Object.keys(localStorage)) localStorage.setItem(key, "{invalid json");
+    localStorage.setItem("pathforall-profile-v7", "{invalid json");
+  });
+  await page.reload();
+  await selectJourney(page);
+  await page.getByRole("button", { name: "Find routes" }).click();
+  await expect(page.locator("article.route-card").first()).toBeVisible();
+});
+
+async function selectJourney(page) {
+  for (const [id, text] of [["start", "Start path"], ["end", "End path"]]) {
+    const input = page.locator(`#${id}Search`);
+    await input.fill(text);
+    await expect(page.locator(`#${id}Suggestions [role=option]`)).toHaveCount(1);
+    await input.press("ArrowDown");
+    await input.press("Enter");
+  }
+}
+
+test("cancelling a pending plan restores the planning controls", async ({ page }) => {
+  await selectJourney(page);
+  let started;
+  const pending = new Promise(resolve => { started = resolve; });
+  let release;
+  const delayed = new Promise(resolve => { release = resolve; });
+  const intercept = async route => {
+    started();
+    await delayed;
+    await route.fulfill({ json: overpassFixture() }).catch(() => {});
+  };
+  await page.route("**/api/interpreter", intercept);
+  const plan = page.getByRole("button", { name: "Find routes", exact: true });
+  await plan.click();
+  await pending;
+  await expect(plan).toBeDisabled();
+  await page.getByRole("radio", { name: "Walk", exact: true }).click();
+  await expect(plan).toBeEnabled();
+  await expect(plan).toHaveAttribute("aria-busy", "false");
+  await page.unroute("**/api/interpreter", intercept);
+  release();
+  await plan.click();
+  await expect(page.locator("article.route-card").first()).toBeVisible();
+});

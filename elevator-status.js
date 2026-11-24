@@ -3,7 +3,6 @@
 import { fetchWithPolicy } from "./fetch-client.js";
 
 const STATUS_VALUES = new Set(["working", "out", "unknown"]);
-const FRESHNESS_VALUES = new Set(["current", "stale", "unknown"]);
 
 /**
  * Normalize backend-provided equipment records by stable equipment and path IDs.
@@ -31,19 +30,17 @@ export function normalizeAccessiblePath(path = {}, equipmentByCode = new Map(), 
   const equipmentCodes = stringList(path.equipmentCodes || path.equipmentIds);
   const equipment = equipmentCodes.map(code => equipmentByCode.get(code)).filter(Boolean);
   const explicitStatus = normalizeStatus(path.status);
+  const missingEquipment = equipmentCodes.length !== equipment.length;
   const status = equipment.some(item => item.status === "out") || explicitStatus === "out"
     ? "out"
-    : explicitStatus === "working"
-      ? "working"
-      : equipment.length && equipment.every(item => item.status === "working")
-        ? "working"
-        : "unknown";
-  const updatedAt = newestTimestamp([path.updatedAt, ...equipment.map(item => item.updatedAt)]);
-  const freshness = equipment.some(item => item.freshness === "stale")
-    ? "stale"
-    : equipment.length && equipment.every(item => item.freshness === "current")
-      ? "current"
-      : normalizeFreshness(path.freshness, updatedAt, options);
+    : missingEquipment ? "unknown"
+      : equipment.length ? (equipment.every(item => item.status === "working") ? "working" : "unknown")
+        : explicitStatus;
+  const timestamps = [path.updatedAt, ...equipment.map(item => item.updatedAt)].filter(Boolean).map(value => Date.parse(value)).filter(Number.isFinite);
+  // Every required component must be current: the oldest observation controls.
+  const updatedAt = timestamps.length ? new Date(Math.min(...timestamps)).toISOString() : null;
+  const freshness = missingEquipment ? "unknown" : equipment.some(item => item.freshness !== "current")
+    ? "stale" : normalizeFreshness(path.freshness || "current", updatedAt, options);
   return {
     id: stringValue(path.id || path.pathId),
     entranceId: nullableString(path.entranceId),
@@ -144,7 +141,10 @@ export async function refreshMtaElevatorStatuses(stops, options = {}) {
 
 export function accessiblePathSupports(path, action, context = {}) {
   if (!path?.complete || path.wheelchairAccessible === false || path.status !== "working" || path.freshness !== "current") return false;
-  if (!Number.isFinite(Date.parse(path.updatedAt))) return false;
+  const now = context.now == null ? Date.now() : new Date(context.now).getTime();
+  const observed = Date.parse(path.updatedAt);
+  if (!Number.isFinite(observed) || observed > now + 60_000 || now - observed > 300_000) return false;
+  if (path.expiresAt && Date.parse(path.expiresAt) <= now) return false;
   if (context.requireCompletePath !== false) {
     if (!path.entranceId || !path.fareControlAreaId || !path.platformStopIds?.length) return false;
   }
@@ -165,12 +165,13 @@ function normalizeStatus(value) {
 
 function normalizeFreshness(value, updatedAt, options = {}) {
   const explicit = String(value || "").toLowerCase();
-  if (FRESHNESS_VALUES.has(explicit)) return explicit;
-  if (!updatedAt) return "unknown";
-  const maxAgeSeconds = Number(options.maxAgeSeconds);
-  if (!Number.isFinite(maxAgeSeconds) || maxAgeSeconds <= 0) return "unknown";
+  if (explicit === "stale") return "stale";
+  if (explicit === "unknown" || !updatedAt) return "unknown";
+  const maxAgeSeconds = Math.min(300, Number(options.maxAgeSeconds || 300));
   const now = options.now instanceof Date ? options.now : new Date(options.now || Date.now());
-  return now.getTime() - Date.parse(updatedAt) <= maxAgeSeconds * 1000 ? "current" : "stale";
+  const age = now.getTime() - Date.parse(updatedAt);
+  if (!Number.isFinite(age) || age < -60_000) return "unknown";
+  return age <= maxAgeSeconds * 1000 ? "current" : "stale";
 }
 
 function newestTimestamp(values) {

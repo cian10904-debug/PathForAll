@@ -1,0 +1,1166 @@
+[
+  {
+    "id": "NYC-01",
+    "scenario": "tagged grade",
+    "referenceWayId": 986726434,
+    "referenceWayVersion": 1,
+    "referenceNodeIds": [
+      9120697095,
+      9120697090
+    ],
+    "start": [
+      -74.0108305,
+      40.7313744
+    ],
+    "end": [
+      -74.0108788,
+      40.7308406
+    ],
+    "needs": {
+      "maxSlope": 6,
+      "unknownPolicy": "strict"
+    },
+    "attachment": {
+      "layer": "0",
+      "level": "0"
+    },
+    "expected": {
+      "basis": "Independent raw OSM tags and reference-way connectivity; no field evidence.",
+      "rules": [
+        "Returned segments must obey declared hard constraints.",
+        "Strict mode must not confirm an unknown mandatory attribute.",
+        "No synthetic connection between nearby levels."
+      ],
+      "routeRequired": false
+    },
+    "fieldVerification": "pending",
+    "userTrial": "pending"
+  },
+  {
+    "id": "NYC-02",
+    "scenario": "tagged grade",
+    "referenceWayId": 986726437,
+    "referenceWayVersion": 1,
+    "referenceNodeIds": [
+      9120697096,
+      9120697092
+    ],
+    "start": [
+      -74.0108999,
+      40.7312349
+    ],
+    "end": [
+      -74.0109146,
+      40.7310891
+    ],
+    "needs": {
+      "maxSlope": 6,
+      "unknownPolicy": "allow"
+    },
+    "attachment": {
+      "layer": "0",
+      "level": "0"
+    },
+    "expected": {
+      "basis": "Independent raw OSM tags and reference-way connectivity; no field evidence.",
+      "rules": [
+        "Returned segments must obey declared hard constraints.",
+        "Strict mode must not confirm an unknown mandatory attribute.",
+        "No synthetic connection between nearby levels."
+      ],
+      "routeRequired": false
+    },
+    "fieldVerification": "pending",
+    "userTrial": "pending"
+  },
+  {
+    "id": "NYC-03",
+    "scenario": "tagged grade",
+    "referenceWayId": 986726436,
+    "referenceWayVersion": 1,
+    "referenceNodeIds": [
+      9120697085,
+      9120697087
+    ],
+    "start": [
+      -74.0110657,
+      40.7309477
+    ],
+    "end": [
+      -74.0109689,
+      40.7309428
+    ],
+    "needs": {
+      "maxSlope": 6,
+      "unknownPolicy": "strict"
+    },
+    "attachment": {
+      "layer": "0",
+      "level": "0"
+    },
+    "expected": {
+      "basis": "Independent raw OSM tags and reference-way connectivity; no field evidence.",
+      "rules": [
+        "Returned segments must obey declared hard constraints.",
+        "Strict mode must not confirm an unknown mandatory attribute.",
+        "No synthetic connection between nearby levels."
+      ],
+      "routeRequired": false
+    },
+    "fieldVerification": "pending",
+    "userTrial": "pending"
+  },
+  {
+    "id": "NYC-04",
+    "scenario": "tagged grade",
+    "referenceWayId": 888759038,
+    "referenceWayVersion": 4,
+    "referenceNodeIds": [
+      8262936447,
+      10282960462
+    ],
+    "start": [
+      -74.0116211,
+      40.7132301
+    ],
+    "end": [
+      -74.0113554,
+      40.7132822
+    ],
+    "needs": {
+      "maxSlope": 6,
+      "unknownPolicy": "allow"
+    },
+    "attachment": {
+      "layer": "0",
+      "level": "0"
+    },
+    "expected": {
+      "basis": "Independent raw OSM tags and reference-way connectivity; no field evidence.",
+      "rules": [
+        "Returned segments must obey declared hard constraints.",
+        "Strict mode must not confirm an unknown mandatory attribute.",
+        "No synthetic connection between nearby levels."
+      ],
+      "routeRequired": false
+    },
+    "fieldVerification": "pending",
+    "userTrial": "pending"
+  },
+  {
+    "id": "NYC-05",
+    "scenario": "ordinary pedestrian path",
+    "referenceWayId": 1148930354,
+    "referenceWayVersion": 1,
+    "referenceNodeIds": [
+      8880466806,
+      5780135051
+    ],
+    "start": [
+      -73.9898548,
+      40.7299029
+    ],
+    "end": [
+      -73.9903545,
+      40.729814
+    ],
+    "needs": {
+      "unknownPolicy": "strict"
+    },
+    "attachment": {
+      "layer": "0",
+      "level": "0"
+    },
+    "expected": {
+      "basis": "Independent raw OSM tags and reference-way connectivity; no field evidence.",
+      "rules": [
+        "Returned segments must obey declared hard constraints.",
+        "Strict mode must not confirm an unknown mandatory attribute.",
+        "No synthetic connection between nearby levels."
+      ],
+      "routeRequired": true
+    },
+    "fieldVerification": "pending",
+    "userTrial": "pending"
+  },
+  {
+    "id": "NYC-06",
+    "scenario": "ordinary pedestrian path",
+    "referenceWayId": 423932535,
+    "referenceWayVersion": 8,
+    "referenceNodeIds": [
+      4234425040,
+      3973686161
+    ],
+    "start": [
+      -73.9900105,
+      40.7296647
+    ],
+    "end": [
+      -73.9896563,
+      40.7301403
+    ],
+    "needs": {
+      "unknownPolicy": "allow"
+    },
+    "attachment": {
+      "layer": "0",
+      "level": "0"
+    },
+    "expected": {
+      "basis": "Independent raw OSM tags and reference-way connectivity; no field evidence.",
+      "rules": [
+        "Returned segments must obey declared hard constraints.",
+        "Strict mode must not confirm an unknown mandatory attribute.",
+        "No synthetic connection between nearby levels."
+      ],
+      "routeRequired": true
+    },
+    "fieldVerification": "pending",
+    "userTrial": "pending"
+  },
+  {
+    "id": "NYC-07",
+    "scenario": "ordinary pedestrian path",
+    "referenceWayId": 610302526,
+    "referenceWayVersion": 4,
+    "referenceNodeIds": [
+      3973686161,
+      5780152919
+    ],
+    "start": [
+      -73.9896563,
+      40.7301403
+    ],
+    "end": [
+      -73.9904439,
+      40.7304713
+    ],
+    "needs": {
+      "unknownPolicy": "strict"
+    },
+    "attachment": {
+      "layer": "0",
+      "level": "0"
+    },
+    "expected": {
+      "basis": "Independent raw OSM tags and reference-way connectivity; no field evidence.",
+      "rules": [
+        "Returned segments must obey declared hard constraints.",
+        "Strict mode must not confirm an unknown mandatory attribute.",
+        "No synthetic connection between nearby levels."
+      ],
+      "routeRequired": true
+    },
+    "fieldVerification": "pending",
+    "userTrial": "pending"
+  },
+  {
+    "id": "NYC-08",
+    "scenario": "ordinary pedestrian path",
+    "referenceWayId": 610301170,
+    "referenceWayVersion": 7,
+    "referenceNodeIds": [
+      5780135047,
+      5784518531
+    ],
+    "start": [
+      -73.9900747,
+      40.7295744
+    ],
+    "end": [
+      -73.9908567,
+      40.7284749
+    ],
+    "needs": {
+      "unknownPolicy": "allow"
+    },
+    "attachment": {
+      "layer": "0",
+      "level": "0"
+    },
+    "expected": {
+      "basis": "Independent raw OSM tags and reference-way connectivity; no field evidence.",
+      "rules": [
+        "Returned segments must obey declared hard constraints.",
+        "Strict mode must not confirm an unknown mandatory attribute.",
+        "No synthetic connection between nearby levels."
+      ],
+      "routeRequired": true
+    },
+    "fieldVerification": "pending",
+    "userTrial": "pending"
+  },
+  {
+    "id": "NYC-09",
+    "scenario": "ordinary pedestrian path",
+    "referenceWayId": 424094778,
+    "referenceWayVersion": 6,
+    "referenceNodeIds": [
+      4235738197,
+      11916135034
+    ],
+    "start": [
+      -73.9895377,
+      40.729817
+    ],
+    "end": [
+      -73.9889355,
+      40.7298569
+    ],
+    "needs": {
+      "unknownPolicy": "strict"
+    },
+    "attachment": {
+      "layer": "0",
+      "level": "0"
+    },
+    "expected": {
+      "basis": "Independent raw OSM tags and reference-way connectivity; no field evidence.",
+      "rules": [
+        "Returned segments must obey declared hard constraints.",
+        "Strict mode must not confirm an unknown mandatory attribute.",
+        "No synthetic connection between nearby levels."
+      ],
+      "routeRequired": true
+    },
+    "fieldVerification": "pending",
+    "userTrial": "pending"
+  },
+  {
+    "id": "NYC-10",
+    "scenario": "ordinary pedestrian path",
+    "referenceWayId": 394355285,
+    "referenceWayVersion": 7,
+    "referenceNodeIds": [
+      3919359300,
+      4235733229
+    ],
+    "start": [
+      -73.9897165,
+      40.7295653
+    ],
+    "end": [
+      -73.9895291,
+      40.7298291
+    ],
+    "needs": {
+      "unknownPolicy": "allow"
+    },
+    "attachment": {
+      "layer": "0",
+      "level": "0"
+    },
+    "expected": {
+      "basis": "Independent raw OSM tags and reference-way connectivity; no field evidence.",
+      "rules": [
+        "Returned segments must obey declared hard constraints.",
+        "Strict mode must not confirm an unknown mandatory attribute.",
+        "No synthetic connection between nearby levels."
+      ],
+      "routeRequired": true
+    },
+    "fieldVerification": "pending",
+    "userTrial": "pending"
+  },
+  {
+    "id": "NYC-11",
+    "scenario": "both-end curb evidence",
+    "referenceWayId": 424094785,
+    "referenceWayVersion": 8,
+    "referenceNodeIds": [
+      3919359294,
+      3919359300
+    ],
+    "start": [
+      -73.9899561,
+      40.7296897
+    ],
+    "end": [
+      -73.9897165,
+      40.7295653
+    ],
+    "needs": {
+      "requireCurb": true,
+      "wheelchairMode": true,
+      "avoidStairs": true,
+      "unknownPolicy": "strict"
+    },
+    "attachment": {
+      "layer": "0",
+      "level": "0"
+    },
+    "expected": {
+      "basis": "Independent raw OSM tags and reference-way connectivity; no field evidence.",
+      "rules": [
+        "Returned segments must obey declared hard constraints.",
+        "Strict mode must not confirm an unknown mandatory attribute.",
+        "No synthetic connection between nearby levels."
+      ],
+      "routeRequired": false
+    },
+    "fieldVerification": "pending",
+    "userTrial": "pending"
+  },
+  {
+    "id": "NYC-12",
+    "scenario": "both-end curb evidence",
+    "referenceWayId": 388762660,
+    "referenceWayVersion": 11,
+    "referenceNodeIds": [
+      4234425040,
+      5780135047
+    ],
+    "start": [
+      -73.9900105,
+      40.7296647
+    ],
+    "end": [
+      -73.9900747,
+      40.7295744
+    ],
+    "needs": {
+      "requireCurb": true,
+      "wheelchairMode": true,
+      "avoidStairs": true,
+      "unknownPolicy": "allow"
+    },
+    "attachment": {
+      "layer": "0",
+      "level": "0"
+    },
+    "expected": {
+      "basis": "Independent raw OSM tags and reference-way connectivity; no field evidence.",
+      "rules": [
+        "Returned segments must obey declared hard constraints.",
+        "Strict mode must not confirm an unknown mandatory attribute.",
+        "No synthetic connection between nearby levels."
+      ],
+      "routeRequired": false
+    },
+    "fieldVerification": "pending",
+    "userTrial": "pending"
+  },
+  {
+    "id": "NYC-13",
+    "scenario": "both-end curb evidence",
+    "referenceWayId": 394355283,
+    "referenceWayVersion": 9,
+    "referenceNodeIds": [
+      3973686161,
+      3973686162
+    ],
+    "start": [
+      -73.9896563,
+      40.7301403
+    ],
+    "end": [
+      -73.9895784,
+      40.7302516
+    ],
+    "needs": {
+      "requireCurb": true,
+      "wheelchairMode": true,
+      "avoidStairs": true,
+      "unknownPolicy": "strict"
+    },
+    "attachment": {
+      "layer": "0",
+      "level": "0"
+    },
+    "expected": {
+      "basis": "Independent raw OSM tags and reference-way connectivity; no field evidence.",
+      "rules": [
+        "Returned segments must obey declared hard constraints.",
+        "Strict mode must not confirm an unknown mandatory attribute.",
+        "No synthetic connection between nearby levels."
+      ],
+      "routeRequired": false
+    },
+    "fieldVerification": "pending",
+    "userTrial": "pending"
+  },
+  {
+    "id": "NYC-14",
+    "scenario": "both-end curb evidence",
+    "referenceWayId": 423932531,
+    "referenceWayVersion": 9,
+    "referenceNodeIds": [
+      3973686162,
+      11916135041
+    ],
+    "start": [
+      -73.9895784,
+      40.7302516
+    ],
+    "end": [
+      -73.9893259,
+      40.7301449
+    ],
+    "needs": {
+      "requireCurb": true,
+      "wheelchairMode": true,
+      "avoidStairs": true,
+      "unknownPolicy": "allow"
+    },
+    "attachment": {
+      "layer": "0",
+      "level": "0"
+    },
+    "expected": {
+      "basis": "Independent raw OSM tags and reference-way connectivity; no field evidence.",
+      "rules": [
+        "Returned segments must obey declared hard constraints.",
+        "Strict mode must not confirm an unknown mandatory attribute.",
+        "No synthetic connection between nearby levels."
+      ],
+      "routeRequired": false
+    },
+    "fieldVerification": "pending",
+    "userTrial": "pending"
+  },
+  {
+    "id": "NYC-15",
+    "scenario": "both-end curb evidence",
+    "referenceWayId": 424092085,
+    "referenceWayVersion": 5,
+    "referenceNodeIds": [
+      4235733229,
+      4235733236
+    ],
+    "start": [
+      -73.9895291,
+      40.7298291
+    ],
+    "end": [
+      -73.9894841,
+      40.7298924
+    ],
+    "needs": {
+      "requireCurb": true,
+      "wheelchairMode": true,
+      "avoidStairs": true,
+      "unknownPolicy": "strict"
+    },
+    "attachment": {
+      "layer": "0",
+      "level": "0"
+    },
+    "expected": {
+      "basis": "Independent raw OSM tags and reference-way connectivity; no field evidence.",
+      "rules": [
+        "Returned segments must obey declared hard constraints.",
+        "Strict mode must not confirm an unknown mandatory attribute.",
+        "No synthetic connection between nearby levels."
+      ],
+      "routeRequired": false
+    },
+    "fieldVerification": "pending",
+    "userTrial": "pending"
+  },
+  {
+    "id": "NYC-16",
+    "scenario": "both-end curb evidence",
+    "referenceWayId": 388761916,
+    "referenceWayVersion": 11,
+    "referenceNodeIds": [
+      3919359290,
+      5780135038
+    ],
+    "start": [
+      -73.9898194,
+      40.7294347
+    ],
+    "end": [
+      -73.9900684,
+      40.729546
+    ],
+    "needs": {
+      "requireCurb": true,
+      "wheelchairMode": true,
+      "avoidStairs": true,
+      "unknownPolicy": "allow"
+    },
+    "attachment": {
+      "layer": "0",
+      "level": "0"
+    },
+    "expected": {
+      "basis": "Independent raw OSM tags and reference-way connectivity; no field evidence.",
+      "rules": [
+        "Returned segments must obey declared hard constraints.",
+        "Strict mode must not confirm an unknown mandatory attribute.",
+        "No synthetic connection between nearby levels."
+      ],
+      "routeRequired": false
+    },
+    "fieldVerification": "pending",
+    "userTrial": "pending"
+  },
+  {
+    "id": "NYC-17",
+    "scenario": "stairs exclusion",
+    "referenceWayId": 959803940,
+    "referenceWayVersion": 2,
+    "referenceNodeIds": [
+      8880466808,
+      8880466806
+    ],
+    "start": [
+      -73.98983,
+      40.729908
+    ],
+    "end": [
+      -73.9898548,
+      40.7299029
+    ],
+    "needs": {
+      "avoidStairs": true,
+      "unknownPolicy": "strict"
+    },
+    "attachment": {
+      "layer": "0",
+      "level": "0"
+    },
+    "expected": {
+      "basis": "Independent raw OSM tags and reference-way connectivity; no field evidence.",
+      "rules": [
+        "Returned segments must obey declared hard constraints.",
+        "Strict mode must not confirm an unknown mandatory attribute.",
+        "No synthetic connection between nearby levels."
+      ],
+      "routeRequired": false
+    },
+    "fieldVerification": "pending",
+    "userTrial": "pending"
+  },
+  {
+    "id": "NYC-18",
+    "scenario": "stairs exclusion",
+    "referenceWayId": 453239583,
+    "referenceWayVersion": 6,
+    "referenceNodeIds": [
+      4500010367,
+      4500010369
+    ],
+    "start": [
+      -73.9932047,
+      40.7316143
+    ],
+    "end": [
+      -73.9931942,
+      40.7316286
+    ],
+    "needs": {
+      "avoidStairs": true,
+      "unknownPolicy": "allow"
+    },
+    "attachment": {
+      "layer": "0",
+      "level": "0"
+    },
+    "expected": {
+      "basis": "Independent raw OSM tags and reference-way connectivity; no field evidence.",
+      "rules": [
+        "Returned segments must obey declared hard constraints.",
+        "Strict mode must not confirm an unknown mandatory attribute.",
+        "No synthetic connection between nearby levels."
+      ],
+      "routeRequired": false
+    },
+    "fieldVerification": "pending",
+    "userTrial": "pending"
+  },
+  {
+    "id": "NYC-19",
+    "scenario": "stairs exclusion",
+    "referenceWayId": 509025015,
+    "referenceWayVersion": 3,
+    "referenceNodeIds": [
+      4983147818,
+      2611341941
+    ],
+    "start": [
+      -73.9895936,
+      40.7342231
+    ],
+    "end": [
+      -73.9895348,
+      40.734202
+    ],
+    "needs": {
+      "avoidStairs": true,
+      "unknownPolicy": "strict"
+    },
+    "attachment": {
+      "layer": "-1",
+      "level": "-1;0"
+    },
+    "expected": {
+      "basis": "Independent raw OSM tags and reference-way connectivity; no field evidence.",
+      "rules": [
+        "Returned segments must obey declared hard constraints.",
+        "Strict mode must not confirm an unknown mandatory attribute.",
+        "No synthetic connection between nearby levels."
+      ],
+      "routeRequired": false
+    },
+    "fieldVerification": "pending",
+    "userTrial": "pending"
+  },
+  {
+    "id": "NYC-20",
+    "scenario": "stairs exclusion",
+    "referenceWayId": 509025014,
+    "referenceWayVersion": 3,
+    "referenceNodeIds": [
+      2611341945,
+      4983147815
+    ],
+    "start": [
+      -73.9896895,
+      40.7342564
+    ],
+    "end": [
+      -73.9896319,
+      40.7342363
+    ],
+    "needs": {
+      "avoidStairs": true,
+      "unknownPolicy": "allow"
+    },
+    "attachment": {
+      "layer": "-1",
+      "level": "-1;0"
+    },
+    "expected": {
+      "basis": "Independent raw OSM tags and reference-way connectivity; no field evidence.",
+      "rules": [
+        "Returned segments must obey declared hard constraints.",
+        "Strict mode must not confirm an unknown mandatory attribute.",
+        "No synthetic connection between nearby levels."
+      ],
+      "routeRequired": false
+    },
+    "fieldVerification": "pending",
+    "userTrial": "pending"
+  },
+  {
+    "id": "NYC-21",
+    "scenario": "bridge topology",
+    "referenceWayId": 1237664160,
+    "referenceWayVersion": 1,
+    "referenceNodeIds": [
+      6369576670,
+      6369576672
+    ],
+    "start": [
+      -73.9945856,
+      40.7152941
+    ],
+    "end": [
+      -73.9946472,
+      40.7152215
+    ],
+    "needs": {
+      "unknownPolicy": "strict"
+    },
+    "attachment": {
+      "layer": "1",
+      "level": "0"
+    },
+    "expected": {
+      "basis": "Independent raw OSM tags and reference-way connectivity; no field evidence.",
+      "rules": [
+        "Returned segments must obey declared hard constraints.",
+        "Strict mode must not confirm an unknown mandatory attribute.",
+        "No synthetic connection between nearby levels."
+      ],
+      "routeRequired": true
+    },
+    "fieldVerification": "pending",
+    "userTrial": "pending"
+  },
+  {
+    "id": "NYC-22",
+    "scenario": "bridge topology",
+    "referenceWayId": 718432361,
+    "referenceWayVersion": 6,
+    "referenceNodeIds": [
+      11040214247,
+      13591653047
+    ],
+    "start": [
+      -73.9735762,
+      40.73188
+    ],
+    "end": [
+      -73.9729194,
+      40.7319788
+    ],
+    "needs": {
+      "unknownPolicy": "allow"
+    },
+    "attachment": {
+      "layer": "1",
+      "level": "0"
+    },
+    "expected": {
+      "basis": "Independent raw OSM tags and reference-way connectivity; no field evidence.",
+      "rules": [
+        "Returned segments must obey declared hard constraints.",
+        "Strict mode must not confirm an unknown mandatory attribute.",
+        "No synthetic connection between nearby levels."
+      ],
+      "routeRequired": true
+    },
+    "fieldVerification": "pending",
+    "userTrial": "pending"
+  },
+  {
+    "id": "NYC-23",
+    "scenario": "bridge topology",
+    "referenceWayId": 32937406,
+    "referenceWayVersion": 12,
+    "referenceNodeIds": [
+      370909370,
+      3748452135
+    ],
+    "start": [
+      -73.9749589,
+      40.7371933
+    ],
+    "end": [
+      -73.9748483,
+      40.7371465
+    ],
+    "needs": {
+      "unknownPolicy": "strict"
+    },
+    "attachment": {
+      "layer": "1",
+      "level": "0"
+    },
+    "expected": {
+      "basis": "Independent raw OSM tags and reference-way connectivity; no field evidence.",
+      "rules": [
+        "Returned segments must obey declared hard constraints.",
+        "Strict mode must not confirm an unknown mandatory attribute.",
+        "No synthetic connection between nearby levels."
+      ],
+      "routeRequired": true
+    },
+    "fieldVerification": "pending",
+    "userTrial": "pending"
+  },
+  {
+    "id": "NYC-24",
+    "scenario": "bridge topology",
+    "referenceWayId": 371264550,
+    "referenceWayVersion": 4,
+    "referenceNodeIds": [
+      3748452135,
+      3734574082
+    ],
+    "start": [
+      -73.9748483,
+      40.7371465
+    ],
+    "end": [
+      -73.9741736,
+      40.7368605
+    ],
+    "needs": {
+      "unknownPolicy": "allow"
+    },
+    "attachment": {
+      "layer": "1",
+      "level": "0"
+    },
+    "expected": {
+      "basis": "Independent raw OSM tags and reference-way connectivity; no field evidence.",
+      "rules": [
+        "Returned segments must obey declared hard constraints.",
+        "Strict mode must not confirm an unknown mandatory attribute.",
+        "No synthetic connection between nearby levels."
+      ],
+      "routeRequired": true
+    },
+    "fieldVerification": "pending",
+    "userTrial": "pending"
+  },
+  {
+    "id": "NYC-25",
+    "scenario": "tunnel or internal passage",
+    "referenceWayId": 509025008,
+    "referenceWayVersion": 2,
+    "referenceNodeIds": [
+      4983147762,
+      4983147761
+    ],
+    "start": [
+      -73.9898353,
+      40.7343487
+    ],
+    "end": [
+      -73.9898288,
+      40.7343076
+    ],
+    "needs": {
+      "unknownPolicy": "strict"
+    },
+    "attachment": {
+      "layer": "-1",
+      "level": "-2;-1"
+    },
+    "expected": {
+      "basis": "Independent raw OSM tags and reference-way connectivity; no field evidence.",
+      "rules": [
+        "Returned segments must obey declared hard constraints.",
+        "Strict mode must not confirm an unknown mandatory attribute.",
+        "No synthetic connection between nearby levels."
+      ],
+      "routeRequired": true
+    },
+    "fieldVerification": "pending",
+    "userTrial": "pending"
+  },
+  {
+    "id": "NYC-26",
+    "scenario": "tunnel or internal passage",
+    "referenceWayId": 509025059,
+    "referenceWayVersion": 3,
+    "referenceNodeIds": [
+      4983147934,
+      2611341951
+    ],
+    "start": [
+      -73.9902749,
+      40.7345232
+    ],
+    "end": [
+      -73.9903223,
+      40.7345427
+    ],
+    "needs": {
+      "unknownPolicy": "allow"
+    },
+    "attachment": {
+      "layer": "-1",
+      "level": "-1;0"
+    },
+    "expected": {
+      "basis": "Independent raw OSM tags and reference-way connectivity; no field evidence.",
+      "rules": [
+        "Returned segments must obey declared hard constraints.",
+        "Strict mode must not confirm an unknown mandatory attribute.",
+        "No synthetic connection between nearby levels."
+      ],
+      "routeRequired": true
+    },
+    "fieldVerification": "pending",
+    "userTrial": "pending"
+  },
+  {
+    "id": "NYC-27",
+    "scenario": "tunnel or internal passage",
+    "referenceWayId": 509025006,
+    "referenceWayVersion": 2,
+    "referenceNodeIds": [
+      4983147726,
+      4983147725
+    ],
+    "start": [
+      -73.9900038,
+      40.7345318
+    ],
+    "end": [
+      -73.9899981,
+      40.7344877
+    ],
+    "needs": {
+      "unknownPolicy": "strict"
+    },
+    "attachment": {
+      "layer": "-1",
+      "level": "-2;-1"
+    },
+    "expected": {
+      "basis": "Independent raw OSM tags and reference-way connectivity; no field evidence.",
+      "rules": [
+        "Returned segments must obey declared hard constraints.",
+        "Strict mode must not confirm an unknown mandatory attribute.",
+        "No synthetic connection between nearby levels."
+      ],
+      "routeRequired": true
+    },
+    "fieldVerification": "pending",
+    "userTrial": "pending"
+  },
+  {
+    "id": "NYC-28",
+    "scenario": "tunnel or internal passage",
+    "referenceWayId": 509025009,
+    "referenceWayVersion": 2,
+    "referenceNodeIds": [
+      4983147764,
+      4983147763
+    ],
+    "start": [
+      -73.9898616,
+      40.7345447
+    ],
+    "end": [
+      -73.9898533,
+      40.7345082
+    ],
+    "needs": {
+      "unknownPolicy": "allow"
+    },
+    "attachment": {
+      "layer": "-1",
+      "level": "-2;-1"
+    },
+    "expected": {
+      "basis": "Independent raw OSM tags and reference-way connectivity; no field evidence.",
+      "rules": [
+        "Returned segments must obey declared hard constraints.",
+        "Strict mode must not confirm an unknown mandatory attribute.",
+        "No synthetic connection between nearby levels."
+      ],
+      "routeRequired": true
+    },
+    "fieldVerification": "pending",
+    "userTrial": "pending"
+  },
+  {
+    "id": "NYC-29",
+    "scenario": "unknown grade",
+    "referenceWayId": 424092083,
+    "referenceWayVersion": 7,
+    "referenceNodeIds": [
+      4235733236,
+      3973686164
+    ],
+    "start": [
+      -73.9894841,
+      40.7298924
+    ],
+    "end": [
+      -73.9893688,
+      40.7300546
+    ],
+    "needs": {
+      "maxSlope": 6,
+      "unknownPolicy": "strict"
+    },
+    "attachment": {
+      "layer": "0",
+      "level": "0"
+    },
+    "expected": {
+      "basis": "Independent raw OSM tags and reference-way connectivity; no field evidence.",
+      "rules": [
+        "Returned segments must obey declared hard constraints.",
+        "Strict mode must not confirm an unknown mandatory attribute.",
+        "No synthetic connection between nearby levels."
+      ],
+      "routeRequired": false
+    },
+    "fieldVerification": "pending",
+    "userTrial": "pending"
+  },
+  {
+    "id": "NYC-30",
+    "scenario": "unknown grade",
+    "referenceWayId": 424094784,
+    "referenceWayVersion": 7,
+    "referenceNodeIds": [
+      4235738195,
+      11916135053
+    ],
+    "start": [
+      -73.9894745,
+      40.7299059
+    ],
+    "end": [
+      -73.9891032,
+      40.7299301
+    ],
+    "needs": {
+      "maxSlope": 6,
+      "unknownPolicy": "allow"
+    },
+    "attachment": {
+      "layer": "0",
+      "level": "0"
+    },
+    "expected": {
+      "basis": "Independent raw OSM tags and reference-way connectivity; no field evidence.",
+      "rules": [
+        "Returned segments must obey declared hard constraints.",
+        "Strict mode must not confirm an unknown mandatory attribute.",
+        "No synthetic connection between nearby levels."
+      ],
+      "routeRequired": false
+    },
+    "fieldVerification": "pending",
+    "userTrial": "pending"
+  },
+  {
+    "id": "NYC-31",
+    "scenario": "coverage boundary",
+    "start": [
+      -73.99,
+      40.73
+    ],
+    "end": [
+      -74.3,
+      40.73
+    ],
+    "needs": {
+      "wheelchairMode": true,
+      "avoidStairs": true,
+      "requireCurb": true,
+      "maxSlope": 6,
+      "unknownPolicy": "strict"
+    },
+    "expected": {
+      "basis": "Published NYC bounds and frozen evaluation snapshot coverage.",
+      "rules": [
+        "Return incomplete coverage, not confirmed absence of a real-world route."
+      ],
+      "routeRequired": false
+    },
+    "fieldVerification": "pending",
+    "userTrial": "pending"
+  },
+  {
+    "id": "NYC-32",
+    "scenario": "coverage boundary",
+    "start": [
+      -73.99,
+      40.73
+    ],
+    "end": [
+      -73.96,
+      40.76
+    ],
+    "needs": {
+      "wheelchairMode": true,
+      "avoidStairs": true,
+      "requireCurb": true,
+      "maxSlope": 6,
+      "unknownPolicy": "strict"
+    },
+    "expected": {
+      "basis": "Published NYC bounds and frozen evaluation snapshot coverage.",
+      "rules": [
+        "Return incomplete coverage, not confirmed absence of a real-world route."
+      ],
+      "routeRequired": false
+    },
+    "fieldVerification": "pending",
+    "userTrial": "pending"
+  }
+]

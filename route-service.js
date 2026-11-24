@@ -1,14 +1,14 @@
 "use strict";
 
 import { lineGeometry, normalizeRouteOption, place } from "./route-model.js";
-import { TransitProviderError } from "./transit-errors.js";
+import { TransitProviderError, TRANSIT_ERROR_MESSAGES } from "./transit-errors.js";
 import { fetchWithPolicy } from "./fetch-client.js";
+import { actualVehicleModes, matchesSearchMode, searchMode, VEHICLE_MODES } from "./transit-modes.js";
 import { transitEnvironment } from "./transit-connections.js";
 
 const ROUTING_URL = transitEnvironment.endpoints.routeProvider.url;
 const CAPABILITIES_URL = transitEnvironment.endpoints.capabilities.url;
 const CONFIGURED_MODES = transitEnvironment.modes;
-const ROUTE_MODES = new Set(["walk", "bus", "subway", "ferry", "mixed"]);
 
 export function hasAccessibleRoutingService(url = ROUTING_URL, mode = null, capabilities = configuredRoutingCapabilities({ url })) {
   return Boolean(url) && (!mode || providerSupportsMode(capabilities, mode));
@@ -40,7 +40,8 @@ export function providerSupportsMode(capabilities, mode) {
   return Boolean(
     capabilities?.available
     && capabilities?.routeProvider !== false
-    && supportedModes.includes(String(mode || "").toLowerCase())
+    && capabilities.freshness !== "stale"
+    && (supportedModes.includes(searchMode(mode)) || (searchMode(mode) === "mixed" && supportedModes.some(value => VEHICLE_MODES.has(value))))
   );
 }
 
@@ -55,7 +56,7 @@ export async function loadRoutingCapabilities({
   url = ROUTING_URL,
   capabilitiesUrl = CAPABILITIES_URL,
   fetchImpl = globalThis.fetch,
-  signal,
+  signal = undefined,
   fallback = configuredRoutingCapabilities({ url }),
   now = new Date()
 } = {}) {
@@ -75,9 +76,12 @@ export async function loadRoutingCapabilities({
     }, true, { now });
   } catch (error) {
     if (error?.name === "AbortError") throw error;
-    console.warn("Route-provider capabilities unavailable; using configured modes.", error);
+
     return {
       ...fallback,
+      available: false,
+      modes: [],
+      supportedModes: [],
       checked: true,
       connectionStatus: "unavailable",
       freshness: "unknown"
@@ -103,7 +107,9 @@ export function createRoutingService({
           supportedModes: capabilities.modes
         });
       }
-      const response = await fetchWithPolicy(url, {
+      let response;
+      try {
+        response = await fetchWithPolicy(url, {
         method: "POST",
         headers: { "Content-Type": "application/json", Accept: "application/json" },
         signal,
@@ -120,35 +126,34 @@ export function createRoutingService({
         retries: 0,
         source: "Accessible route provider"
       });
+      } catch (error) {
+        if (error?.name === "AbortError") throw error;
+        throw new TransitProviderError(error?.code === "FETCH_TIMEOUT" ? "PROVIDER_TIMEOUT" :
+          error?.code === "RESPONSE_TOO_LARGE" ? "PROVIDER_CONTRACT_ERROR" : "PROVIDER_UNAVAILABLE");
+      }
+      const payload = await safeJson(response);
       if (!response.ok) {
-        const payload = await safeJson(response);
-        throw new TransitProviderError(
-          payload?.code || "TRANSIT_PROVIDER_UNAVAILABLE",
-          payload?.message || `Accessible routing service returned ${response.status}.`,
-          { status: response.status, retriable: response.status >= 500 }
-        );
+        const code = Object.hasOwn(TRANSIT_ERROR_MESSAGES, payload?.code) ? payload.code
+          : response.status === 504 ? "PROVIDER_TIMEOUT"
+            : response.status === 429 ? "RATE_LIMITED" : "PROVIDER_UNAVAILABLE";
+        throw new TransitProviderError(code, undefined, {
+          status: response.status, retriable: response.status >= 500, provider: payload?.details
+        });
       }
-      const payload = await response.json();
-      const routes = Array.isArray(payload?.routes) ? payload.routes : [];
-      const normalized = routes.map((route, index) => normalizeServerRoute(route, index, {
-        start,
-        end,
-        requestedMode: mode,
-        dataVersion: payload.dataVersion,
-        serviceAlertVersion: payload.serviceAlertVersion,
-        elevatorStatusVersion: payload.elevatorStatusVersion,
-        providerUpdatedAt: payload.updatedAt,
-        dataFreshness: payload.dataFreshness || payload.freshness,
-        expiresAt: payload.expiresAt,
-        needs
+      if (!Array.isArray(payload?.routes)) throw new TransitProviderError("PROVIDER_CONTRACT_ERROR");
+      const rejected = [];
+      const normalized = payload.routes.slice(0, 20).map((route, index) => normalizeServerRoute(route, index, {
+        start, end, requestedMode: mode, dataVersion: payload.dataVersion,
+        serviceAlertVersion: payload.serviceAlertVersion, elevatorStatusVersion: payload.elevatorStatusVersion,
+        providerUpdatedAt: payload.updatedAt, dataFreshness: payload.dataFreshness || payload.freshness,
+        expiresAt: payload.expiresAt, needs,
+        departureTime, requireTimeline: mode !== "walk",
+        onInvalid(reasons, codes) { rejected.push({ index, reasons, codes }); }
       })).filter(Boolean);
-      if (routes.length && !normalized.length) {
-        throw new TransitProviderError(
-          "PROVIDER_CONTRACT_ERROR",
-          "The route provider returned itineraries that did not match the requested mode or route contract.",
-          { requestedMode: mode, routeCount: routes.length }
-        );
+      if (payload.routes.length && !normalized.length) {
+        throw new TransitProviderError("PROVIDER_CONTRACT_ERROR", undefined, { rejected, upstreamRejected: payload.rejected });
       }
+      if (!payload.routes.length && mode !== "walk") throw new TransitProviderError("NO_FEASIBLE_ROUTE");
       return normalized;
     }
   };
@@ -170,13 +175,13 @@ export function normalizeServerRoute(route, index = 0, context = {}) {
   const legs = rawLegs.map((leg, legIndex) => normalizeServerLeg(leg, legIndex, rawLegs.length, legContext)).filter(Boolean);
   if (!rawLegs.length || legs.length !== rawLegs.length) return null;
   const actualMode = normalizeMode(legs);
-  const requestedMode = String(context.requestedMode || "").toLowerCase();
-  if (!actualMode || (requestedMode && actualMode !== requestedMode)) return null;
+  const requestedMode = searchMode(context.requestedMode || route?.requestedMode);
+  if (!actualMode || !matchesSearchMode(requestedMode, actualVehicleModes(legs))) return null;
   return normalizeRouteOption({
     id: route?.id || route?.routeId || `server-route-${index}`,
     mode: actualMode,
     requestedMode,
-    label: route?.label || route?.name || (index === 0 ? "Recommended accessible route" : "Accessible alternative"),
+    label: route?.label || route?.name || (index === 0 ? "Recommended route" : "Alternative route"),
     legs,
     totalDurationSeconds: optionalSeconds(route?.totalDurationSeconds ?? route?.durationSeconds ?? route?.duration ?? (route?.totalMinutes == null ? undefined : Number(route.totalMinutes) * 60)),
     totalWalkingMeters: nonNegative(route?.totalWalkingMeters ?? route?.walkingMeters),
@@ -188,6 +193,9 @@ export function normalizeServerRoute(route, index = 0, context = {}) {
     warnings: route?.warnings || route?.alerts || route?.reasons || [],
     dataSource: route?.dataSource || route?.provider || "Routing service",
     endpointConnections: route?.endpointConnections,
+    provenance: route?.provenance,
+    retrievedAt: route?.retrievedAt,
+    observedAt: route?.observedAt,
     dataVersion: route?.dataVersion || context.dataVersion,
     serviceAlertVersion: route?.serviceAlertVersion || context.serviceAlertVersion,
     elevatorStatusVersion: route?.elevatorStatusVersion || context.elevatorStatusVersion,
@@ -195,7 +203,12 @@ export function normalizeServerRoute(route, index = 0, context = {}) {
     dataFreshness: route?.dataFreshness || route?.freshness || context.dataFreshness,
     updatedAt: route?.updatedAt || context.providerUpdatedAt,
     expiresAt: route?.expiresAt || context.expiresAt
-  }, { start: context.start, end: context.end, requestedMode, needs: context.needs });
+  }, {
+    start: context.start, end: context.end, requestedMode, needs: context.needs,
+    departureTime: context.departureTime || route?.requestedDepartureTime,
+    requireTimeline: context.requireTimeline || route?.timelineRequired,
+    onInvalid: context.onInvalid
+  });
 }
 
 function normalizeServerLeg(raw = {}, index, total, context) {
@@ -217,7 +230,10 @@ function normalizeServerLeg(raw = {}, index, total, context) {
     id: String(raw.id || raw.legId || `server-leg-${index}`), mode, from, to,
     routeId: raw.routeId || raw.route || raw.line || undefined,
     routeName: raw.routeName || raw.route || raw.lineName || raw.line || undefined,
-    tripId: raw.tripId || undefined,
+    tripId: raw.tripId || undefined, serviceDate: raw.serviceDate, staySeated: raw.staySeated === true,
+    fromSequence: raw.fromSequence, toSequence: raw.toSequence,
+    minimumBoardingSeconds: raw.minimumBoardingSeconds, minimumTransferSeconds: raw.minimumTransferSeconds,
+    scheduledDepartureTime: raw.scheduledDepartureTime, scheduledArrivalTime: raw.scheduledArrivalTime,
     directionId: raw.directionId || undefined,
     headsign: raw.headsign || raw.direction || raw.destinationName || undefined,
     durationSeconds, distanceMeters, waitSeconds,
@@ -246,19 +262,16 @@ function normalizeServerLeg(raw = {}, index, total, context) {
 }
 
 function normalizeMode(legs) {
-  const transitModes = new Set(legs.filter(leg => ["bus", "subway", "ferry"].includes(leg.mode)).map(leg => leg.mode));
-  if (transitModes.size >= 2) return "mixed";
-  if (transitModes.has("bus")) return "bus";
-  if (transitModes.has("subway")) return "subway";
-  if (transitModes.has("ferry")) return "ferry";
-  return "walk";
+  const modes = actualVehicleModes(legs);
+  return modes.length >= 2 ? "mixed" : modes[0] || "walk";
 }
 
 function normalizeLegMode(value) {
   const text = String(value || "").toLowerCase();
   if (["walk", "foot", "walking"].includes(text)) return "walk";
   if (["bus", "coach"].includes(text)) return "bus";
-  if (["subway", "metro", "rail", "train"].includes(text)) return "subway";
+  if (["subway", "metro"].includes(text)) return "subway";
+  if (["rail", "train", "tram", "lirr"].includes(text)) return "rail";
   if (["ferry", "boat"].includes(text)) return "ferry";
   if (["transfer", "change"].includes(text)) return "transfer";
   return null;
@@ -307,6 +320,7 @@ function normalizeCapabilities(value = {}, available = true, options = {}) {
     supportedModes: parseModes(value.supportedModes || value.modes),
     modes: parseModes(value.supportedModes || value.modes),
     transitNetwork: value.transitNetwork === true,
+    scheduledTransit: value.scheduledTransit === true,
     realtimeArrivals: value.realtimeArrivals === true,
     elevatorStatus: value.elevatorStatus === true,
     elevatorAccessibilityPaths: value.elevatorAccessibilityPaths === true,
@@ -316,16 +330,17 @@ function normalizeCapabilities(value = {}, available = true, options = {}) {
     expiresAt,
     freshness,
     checked,
+    code: Object.hasOwn(TRANSIT_ERROR_MESSAGES, value.code) ? value.code : null,
     connectionStatus: normalizeConnectionStatus(value.connectionStatus, checked, freshness, available)
   };
 }
 
 function parseModes(value) {
   const values = Array.isArray(value) ? value : String(value || "").split(",");
-  return [...new Set(values.map(mode => String(mode).trim().toLowerCase()).filter(mode => ROUTE_MODES.has(mode)))];
+  return [...new Set(values.map(searchMode).filter(Boolean))];
 }
 
-function capabilityFreshness(value, { updatedAt, expiresAt, maxAgeSeconds, now = new Date() } = {}) {
+function capabilityFreshness(value, { updatedAt = null, expiresAt = null, maxAgeSeconds = null, now = new Date() } = {}) {
   if (value === "stale") return "stale";
   const nowMs = now instanceof Date ? now.getTime() : Date.parse(now);
   if (expiresAt && Number.isFinite(nowMs) && Date.parse(expiresAt) <= nowMs) return "stale";
@@ -364,7 +379,9 @@ function normalizeLegAccessibility(raw) {
       status: ["working", "out", "unknown"].includes(elevatorValue.status) ? elevatorValue.status : "unknown",
       source: String(elevatorValue.source || "Transit accessibility provider"),
       updatedAt: elevatorValue.updatedAt || null,
-      freshness: ["current", "stale", "unknown"].includes(elevatorValue.freshness) ? elevatorValue.freshness : "unknown"
+      freshness: ["current", "stale", "unknown"].includes(elevatorValue.freshness) ? elevatorValue.freshness : "unknown",
+      authoritative: elevatorValue.authoritative === true,
+      expiresAt: validTimestamp(elevatorValue.expiresAt)
     };
     accessibility.elevatorStatus = accessibility.elevator.status;
   } else {

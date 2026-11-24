@@ -1,179 +1,48 @@
-# MTA and Statue City Cruises integration contract
+# Transit setup
 
-## What the repository uses today
+PathForAll uses OpenTripPlanner **2.8.1** and its GTFS GraphQL API. The default bootstrap pins the release JAR by SHA-256 and explicitly assigns feed IDs for MTA borough bus, MTA Bus Company, subway and LIRR feeds. It reads each agency's calendar in `America/New_York`. The street source is the BBBike New York City extract of OpenStreetMap. MTA data remains subject to [its terms](https://www.mta.info/developers); the street data is subject to the [ODbL](https://www.openstreetmap.org/copyright).
 
-The browser does **not** directly download or decode official MTA static GTFS, GTFS-Realtime, Bus Time, service-alert, or elevator inventory feeds. This repository contains no backend ingestion service and no MTA API key.
+## Build and run
 
-The production client uses only application-owned, normalized JSON endpoints when they are configured:
+From the project root, with Java 21 and Python 3.11+ installed:
 
-| Browser setting | Contract |
-| --- | --- |
-| `VITE_ACCESSIBLE_ROUTING_URL` | POST a complete normalized itinerary for a mode explicitly listed by the provider capabilities. |
-| `VITE_ACCESSIBLE_ROUTING_CAPABILITIES_URL` | GET `{ modes, realtimeArrivals, elevatorAccessibilityPaths, ferrySchedules, freshness, updatedAt }`. A generic elevator-status flag does not confirm a complete path. |
-| `VITE_TRANSIT_NETWORK_URL` | GET a trip-scoped corridor containing normalized `stops` and directed `edges`. |
-| `VITE_TRANSIT_ARRIVALS_URL` | GET normalized predictions for one exact boarding stop, route, trip, mode, and leg index. |
-
-`VITE_ACCESSIBLE_ROUTING_MODES` is the safe capability fallback. Its default is `walk`; configuring a URL no longer implies Bus, Subway, Ferry, or Mixed support. The client rejects a transit network unless its envelope is `freshness: "current"` and contains parseable `updatedAt` and `expiresAt` values.
-
-## Required server-side flow
-
-```text
-MTA static GTFS
-  → stops, parent stations, routes, trips, stop times, calendars,
-    calendar exceptions, shapes, transfers, wheelchair fields
-
-MTA GTFS-Realtime and Bus Time
-  → protobuf decoding, feed-group selection, trip updates,
-    vehicle positions, skipped stops, cancellations, alerts
-
-MTA station accessibility and elevator asset/status snapshots
-  → stable equipment codes joined to entrances, fare-control areas,
-    platform directions, and complete accessible paths
-
-Application-owned ingestion and routing service
-  → versioned, freshness-checked PathForAll JSON
-
-Browser
-  → route comparison, verified map geometry, and navigation
+```sh
+python3 scripts/bootstrap-transit.py --directory otp-data --heap 6g
+java -Xmx6g -jar otp-data/otp-shaded-2.8.1.jar --load --port 8080 --bindAddress 127.0.0.1 otp-data
 ```
 
-Provider credentials and protobuf decoding belong on the server.
+Allow substantial memory beyond the heap for the OS and JVM. This build can take several minutes and requires space for the JAR, data archives, street graph, and final graph. The full extract was built and served with all eight MTA feeds. In this audit environment a higher heap caused the transit stage to be killed while indexing. After the street graph was built, rebuilding the transit stage with `--heap 4300m --reuse-downloads --reuse-streets` and starting OTP with `-Xmx4300m -XX:+UseSerialGC -XX:ActiveProcessorCount=3` succeeded. A bounded pilot was also verified. To use that footprint, download the same BBBike NewYork PBF into the runtime directory and run:
 
-## Static GTFS
-
-The backend must construct the routable schedule from static GTFS. Realtime arrivals alone cannot establish stop order, service calendars, transfers, shapes, or a complete transit network.
-
-The normalized itinerary must preserve:
-
-- provider stop, route, and trip IDs;
-- parent-station and directional platform stop IDs;
-- direction and headsign;
-- forward stop sequence;
-- service date and calendar exception decisions;
-- wheelchair boarding fields where supplied;
-- verified shape geometry, or `null` when no verified shape exists.
-
-## Bus identifiers
-
-MTA Bus Time IDs such as `MTA_308209` are normalized only at the provider boundary. The browser adapter emits a namespaced ID such as `mta:bus:stop:308209` and keeps `providerId: "MTA_308209"` for diagnostics. It does not globally add or strip prefixes.
-
-## Subway feed groups and identifiers
-
-The backend is responsible for selecting and decoding the relevant official subway feed group, then joining trip updates to static GTFS by trip and directional stop IDs. A station name is never an arrival key.
-
-Return stable, provider-scoped fields such as:
-
-```js
-{
-  stationComplexId: "mta:subway:complex:...",
-  parentStationId: "mta:subway:station:...",
-  platformStopId: "mta:subway:platform:...",
-  directionId: "...",
-  entranceId: "...",
-  accessiblePaths: []
-}
+```sh
+python3 -m venv otp-data/clip-env
+otp-data/clip-env/bin/pip install osmium==4.3.2
+otp-data/clip-env/bin/python scripts/clip-osm.py otp-data/new-york.osm.pbf otp-data/pilot.osm.pbf --bounds -74.05 40.63 -73.84 40.86
+python3 scripts/bootstrap-transit.py --directory otp-data/pilot --heap 4g --osm-file otp-data/pilot.osm.pbf --osm-source https://download.bbbike.org/osm/bbbike/NewYork/NewYork.osm.pbf
 ```
 
-## Elevator and accessible-path status
+Point the Java command and `TRANSIT_MANIFEST` at `otp-data/pilot` for this build. Confirm exact options with `scripts/clip-osm.py --help`. The pilot's street bounds do not cover all five boroughs; feed inventory alone does not prove every stop is street-connected. The optional `--ferry-gtfs` and `--ferry-source` accept a calendar-valid GTFS archive. Review [NYC Ferry's developer terms](https://www.ferry.nyc/developer-tools/) before use. For a fresh build (or a staged directory with verified street inputs) the agency's schedule can be added as follows:
 
-The asset inventory is a published snapshot, not second-by-second telemetry. Every normalized equipment record contains:
-
-```js
-{
-  equipmentCode: "...",
-  status: "working" | "out" | "unknown",
-  source: "...",
-  updatedAt: "..." | null,
-  freshness: "current" | "stale" | "unknown",
-  pathIds: []
-}
+```sh
+mkdir -p otp-data
+curl -fL --proto '=https' https://nycferry.connexionz.net/rtt/public/resource/gtfs.zip -o otp-data/ferry.zip
+python3 scripts/bootstrap-transit.py --directory otp-data --heap 4300m --ferry-gtfs otp-data/ferry.zip --ferry-source https://nycferry.connexionz.net/rtt/public/resource/gtfs.zip
 ```
 
-Equipment codes are joined to explicit accessible paths. A path is usable only when it is complete for the required entrance, fare-control area, platform/direction, and action. One failed elevator invalidates only the paths it serves; another complete working path can keep the station complex usable.
+This optional configuration returned and verified scheduled East River ferry itineraries in the engineering audit. An absent or expired ferry feed leaves that mode disabled. The archive and derived graph are runtime assets and should not be committed.
 
-`freshness: "unknown"` and missing timestamps fail closed. OSM elevator mapping is inventory evidence only and never becomes a live working status. The old small station-name alias map and direct browser download were removed.
+Configure `OTP_URL` and `TRANSIT_MANIFEST` as described in the README. Keep OTP private; give browsers the PathForAll URL. For an independent backup instance, set `OTP_FALLBACK_URL` and `TRANSIT_FALLBACK_MANIFEST`. Both must describe meaningful applicable coverage. The server does not automatically fall back from a valid no-route result to an unrelated dataset.
 
-## Scheduled service and transfers
+## Refresh and evidence
 
-Every vehicle edge used by the small client router must carry current, verified schedule evidence: a timestamped departure list, a service frequency window, or an explicitly scheduled boarding wait. Service-day and active-alert checks are applied at the arrival time at that edge. Without this evidence, the client returns `SCHEDULE_UNAVAILABLE`.
+Build refreshes in a staged directory. A failed download can reuse a previously validated, calendar-valid archive in that directory. `--reuse-downloads` skips retrieval for existing inputs; `--reuse-streets` requires the same OSM SHA and OTP version. Never edit an actively serving graph in place. Start the candidate graph, point a test PathForAll backend at its manifest and API, verify readiness and sampled routes, then switch the running service. Keep the previous graph/manifest pair available for replacement while its calendar is valid.
 
-Transfer edges must include:
+The manifest records each feed's source, hash, retrieval timestamp, version where published, calendar window, and graph build time and hash. An HTTP success does not refresh any observation. OTP routing uses scheduled service without requiring realtime. If an operator provisions OTP realtime updaters, route processing distinguishes realtime state from the scheduled boarding and arrival timestamps and ignores invalid or cancelled itinerary data. A usable official realtime, alerts, and elevator deployment is separate: this release does not provision or verify those pipelines, and missing data cannot confirm accessibility. Operator adapters may supply arrivals or topology if they implement and validate the application contract; bundled fixtures are not sources of service information.
 
-- explicit `fromMode` and `toMode`;
-- provider confirmation;
-- verified pedestrian geometry and duration;
-- a complete accessible path for strict trips.
+Verify the pinned GraphQL schema with `npm run verify:otp-schema`. Run `npm run evaluate:live` against the running Node API; use `PFA_API_URL`, `PFA_EVAL_DATE`, `PFA_EVAL_TIME` (New York wall time), and `PFA_EVAL_OUTPUT` as needed. Use `PFA_EVAL_EXTENDED_NYC=1` to require successful Bronx and Staten Island samples, and `PFA_EVAL_REQUIRE_FERRY=1` for the optional ferry validation. The independent schedule audit expects the exact inputs from the graph:
 
-Stop and edge joins use provider/agency/mode compound keys. Ambiguous IDs and cross-provider endpoint collisions are rejected as provider-contract failures.
-
-## Realtime arrivals
-
-PathForAll identifies every boarding group. Bus → Subway, Subway → Bus, and transit → Ferry trips therefore request predictions separately for each boarding.
-
-The backend should return:
-
-```js
-{
-  source: "MTA normalized provider",
-  sourceLabel: "Realtime",
-  updatedAt: "...",
-  maxAgeSeconds: 180,
-  predictions: [{ timestamp: "..." }],
-  scheduledPredictions: []
-}
+```sh
+PFA_EVAL_OUTPUT=evidence/live-transit.json npm run evaluate:live
+python3 scripts/audit-gtfs.py evidence/live-transit.json otp-data
 ```
 
-Stale realtime predictions are not shown as current. Scheduled predictions remain labeled `scheduled`. Missing data never produces a fabricated arrival. After predictions are attached, alternatives are ranked again using final travel time, transfer count, and route trust while retaining stable IDs.
-
-## Service alerts
-
-The backend should apply alerts before returning an itinerary. The small client graph also rejects edges marked cancelled, skipped, inactive, outside their service calendar, or affected by active no-service/closed-path alerts.
-
-Version fields should accompany results:
-
-```js
-{
-  dataVersion: "...",
-  serviceAlertVersion: "...",
-  elevatorStatusVersion: "...",
-  updatedAt: "..."
-}
-```
-
-Transit routes are not cached in the browser, so an earlier outage-sensitive result cannot survive later service or elevator changes.
-
-## Ferry
-
-Liberty Island and Ellis Island use **Statue City Cruises**, the National Park Service-authorized operator. IDs are namespaced separately from MTA, for example:
-
-```text
-statue-city-cruises:terminal:battery
-statue-city-cruises:terminal:liberty-state-park
-statue-city-cruises:dock:liberty-island
-statue-city-cruises:dock:ellis-island
-```
-
-The route provider must include ticket, reservation, security-screening, schedule-source, schedule timestamp/freshness, departure time, and accessibility fields. If a verified current schedule or shape is unavailable, the client returns a controlled unavailable state and does not invent a departure time or draw a direct line across New York Harbor.
-
-## Structured failures
-
-Normalized services may return codes including:
-
-```text
-TRANSIT_PROVIDER_UNAVAILABLE
-NO_NEARBY_BUS_STOP
-NO_ACCESSIBLE_STATION
-NO_ACCESSIBLE_SUBWAY_PATH
-ELEVATOR_PATH_UNAVAILABLE
-NO_SERVICE_AT_THIS_TIME
-REALTIME_DATA_STALE
-TRIP_CANCELLED
-NO_VALID_TRANSFER
-FERRY_CLOSED
-FERRY_TICKET_REQUIRED
-FERRY_SCHEDULE_UNAVAILABLE
-SCHEDULE_UNAVAILABLE
-TRANSIT_DATA_STALE
-PROVIDER_CONTRACT_ERROR
-ENDPOINT_CONNECTOR_UNAVAILABLE
-```
+The script verifies onboard stop sequence and scheduled times against raw GTFS records. It cannot establish land-side passability, live elevator status, or complete geographic coverage. An API client sends `POST /api/routes` with numeric `start`/`end` in longitude/latitude order, `mode` (`bus`, `subway`, `ferry`, `rail`, `mixed`), an ISO departure with offset, and optional normalized `needs`. Results use seconds, meters, and ISO timestamps.

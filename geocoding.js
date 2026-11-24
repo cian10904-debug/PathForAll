@@ -3,9 +3,16 @@
 import { DEFAULT_BOUNDS, NYC_CENTER, isInsideBounds } from "./osm-network.js";
 import { fetchWithPolicy } from "./fetch-client.js";
 
-const PHOTON_ENDPOINT = "https://photon.komoot.io/api/";
-const PHOTON_REVERSE_ENDPOINT = "https://photon.komoot.io/reverse";
-const NOMINATIM_ENDPOINT = "https://nominatim.openstreetmap.org/search";
+const PHOTON_ENDPOINT = serviceUrl(import.meta.env?.VITE_GEOCODE_FORWARD_URL) || "https://photon.komoot.io/api/";
+const PHOTON_REVERSE_ENDPOINT = serviceUrl(import.meta.env?.VITE_GEOCODE_REVERSE_URL) || "https://photon.komoot.io/reverse";
+// Public Nominatim disallows autocomplete. A fallback must be an operator-owned
+// endpoint with the documented JSON contract and usage permission.
+const NOMINATIM_ENDPOINT = serviceUrl(import.meta.env?.VITE_GEOCODE_FALLBACK_URL);
+function serviceUrl(value) {
+  if (typeof value !== "string" || !value) return null;
+  try { const url = new URL(value); return url.protocol === "https:" && !url.username && !url.password
+    && !url.search && !url.hash && url.hostname !== "nominatim.openstreetmap.org" ? url.href : null; } catch { return null; }
+}
 const CACHE_TTL_MS = 120_000;
 const MAX_CACHE_ENTRIES = 80;
 const cache = new Map();
@@ -122,7 +129,7 @@ export async function fetchForwardPlaces(query, options = {}) {
       .map(item => normalizeProviderResult(item))
       .filter(Boolean)
       .filter(place => isInsideBounds(place.coordinates, bounds));
-    if (!needsSupplementalSearch(query, photonPlaces) || options.fetchImpl) return photonPlaces;
+    if (!NOMINATIM_ENDPOINT || !needsSupplementalSearch(query, photonPlaces) || options.fetchImpl) return photonPlaces;
     const supplemental = await fetchNominatimPlaces(query, { bounds, signal: options.signal });
     return dedupePlaces([...photonPlaces, ...supplemental]);
   } catch (error) {
