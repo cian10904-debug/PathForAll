@@ -1,150 +1,76 @@
-# PathForAll — NYC Accessible Navigation
+# PathForAll
 
-PathForAll is a mobile-first route planner for people whose trips depend on conditions such as step-free access, curb ramps, sidewalk slope, surface quality, elevator status, transfer count, weather exposure, and street-light evidence. The map remains visible while people search, select endpoints, compare routes, and navigate.
+PathForAll plans trips in New York City with mobility preferences in mind. It compares routes, shows where the accessibility data comes from, and distinguishes a known barrier from a gap in the data. Route guidance is based on maps and agency data; it is not an assessment of whether a particular person can safely take a route.
 
-## Architecture
-
-The client is a typed-check JavaScript Vite application built around one route contract. Every walking, provider-topology, and server-provider route is normalized into a `RouteOption` containing ordered `legs`, totals in seconds/meters, accessibility evidence, warnings, freshness, expiry, and a data-source label. Cards, map layers, navigation, saved routes, and segment review all consume that shared model.
-
-- `app.js` coordinates the one MapLibre instance, selected places, route-session cancellation, and product screens.
-- `search-controller.js` owns the asynchronous combobox and keyboard interaction; `geocoding.js` provides NYC-wide Photon search with bounded Nominatim supplementation and reverse geocoding.
-- `osm-network.js` loads a temporary OSM route corridor and admits dedicated paths or roads with explicit pedestrian evidence. It returns connected street/path geometry or no route.
-- `route-model.js`, `route-presentation.js`, and `route-layer-data.js` validate and present normalized routes without source-specific UI fields.
-- `route-service.js` adapts an application-owned routing service when configured.
-- `transit-network-service.js` requests fresh, trip-scoped provider topology and validates namespaced MTA and Statue City Cruises identifiers at the boundary.
-- `transit-routing.js` validates service time, scheduled waits, transfer geometry, accessible entrance-to-platform paths, and Bus, Subway, Ferry, or Mixed movement.
-- `transit-realtime.js` requests every boarding separately, never generates fake live arrivals, and re-ranks after valid waits are attached.
-- `ferry-service.js` recognizes Liberty Island and Ellis Island as ferry-required destinations.
-- `storage-adapter.js`, `fetch-client.js`, and the domain stores centralize schema migration, corrupt/quota recovery, timeout, retry, and user-visible errors.
-
-## NYC coverage
-
-The map, search, click selection, GPS validation, and route input use the five-borough boundary:
-
-```text
-west -74.2591 · south 40.4774 · east -73.7004 · north 40.9176
-```
-
-All coordinates use `[longitude, latitude]`. The visible place marker always remains at the actual searched, GPS, or tapped location. A local route begins on mapped pedestrian geometry at the selected point or at a mapped OSM, transit, or building entrance near the selection. The selected location and routing access point are stored separately, and an estimated entrance connection is disclosed as unverified. If neither an exact attachment nor a mapped entrance can reach pedestrian geometry, routing fails closed. No straight or hidden access leg is invented.
-
-## Data and service configuration
-
-Copy the optional example configuration if connecting application-owned services:
-
-```bash
-cp .env.example .env
-```
-
-| Variable | Purpose |
+| Feature | What it uses |
 | --- | --- |
-| `VITE_ACCESSIBLE_ROUTING_URL` | POST endpoint for normalized walking/transit routes across NYC. It keeps protected provider keys on the server. |
-| `VITE_ACCESSIBLE_ROUTING_MODES` | Explicit comma-separated modes supported by that route provider. Safe default: `walk`. |
-| `VITE_ACCESSIBLE_ROUTING_CAPABILITIES_URL` | Optional capability endpoint for modes, realtime arrivals, complete elevator accessibility paths, Ferry schedules, source, and freshness timestamps. |
-| `VITE_TRANSIT_NETWORK_URL` | GET endpoint returning trip-scoped provider-derived `stops` and directed `edges`. |
-| `VITE_TRANSIT_ARRIVALS_URL` | GET endpoint returning predictions for each exact transit boarding. |
+| Walking | A bounded OpenStreetMap pedestrian graph. Paths, crossings, slope, curbs, and surface are evaluated when the data supports them. |
+| Bus, subway, and All Transit | A configured OpenTripPlanner (OTP) graph with calendar-valid feeds. All Transit can return a trip using a single mode. |
+| LIRR and ferry | Separate modes, enabled only when the running graph reports usable service for them. The default graph includes LIRR feeds but no ferry feed. |
+| Search, map, and guidance | NYC address and place search, reverse lookup, location and map pins, route comparison, and on-device navigation. |
+| Profiles, saved routes, and reviews | Stored in the browser. A trip can apply different requirements without changing its saved profile. Reviews are local. |
 
-An accessible routing service receives `{ start, end, needs, mode, departureTime }` with `[longitude, latitude]` coordinates. It must return individual route legs, verified geometry for every non-trivial walking/transfer segment, explicit modes, accessibility metadata, freshness/expiry timestamps, and honest data-source labels. Invalid, stale, disconnected, or mode-mismatched responses are discarded.
+See the [engineering handoff](docs/engineering-handoff.md) for measured coverage, verification, and release limitations.
 
-When no transit service or provider topology is configured, Bus, Subway, Ferry, and Mixed are disabled. They do not fall back to the Cooper Union teaching fixture or a fabricated transit line.
+## Run the app
 
-Profile → Data sources validates these five settings, reports each service independently, and never treats a configured URL as proof of a live connection. The main planner shows only a concise user-facing availability state. With no transit backend, transit modes are disabled and Walk remains available from OSM pedestrian data. **Check connections** checks only configured capability/health information; it does not download MTA data. Development builds expose sanitized diagnostics containing configuration booleans, accepted modes, status, source labels, and timestamps—never credentials or complete endpoint URLs.
+Use the Node version in [`.nvmrc`](.nvmrc). A transit graph additionally requires Java 21, Python 3.11 or newer with time-zone data, and disk and memory for OTP. From the `PathForAll` directory:
 
-Configuration URLs must use HTTPS, except for localhost development. Embedded credentials, fragments, credential-like query parameters, unsupported routing modes, orphan capability endpoints, and orphan arrival endpoints are reported as configuration errors.
-
-## What is real today
-
-- Map tiles, NYC place search, reverse geocoding, and corridor street/path geometry use public OpenStreetMap-backed services at runtime.
-- Walking route candidates respect the selected profile and one-time requirements where OSM provides enough pedestrian, curb, surface, slope, lighting, and elevator evidence. Strict requirements fail closed on critical unknowns.
-- GPS, route preview, local saved routes, field-review notes, and navigation session metrics work locally in the browser.
-- Local profiles, saved routes, and reviews are versioned and recover from corrupt or quota-limited browser storage.
-
-## What requires an external provider or backend
-
-- Reliable long-distance/cross-borough accessible routing needs an application-owned routing backend.
-- Bus, subway, ferry, and mixed itineraries require fresh provider topology with current schedules; station entrance paths, working-elevator status, transfer geometry, and service alerts require authoritative backend-normalized data.
-- Real arrival times require `VITE_TRANSIT_ARRIVALS_URL`; otherwise cards accurately say that arrival times are unavailable.
-- Ferry routing requires a verified current Statue City Cruises schedule and route geometry; destination recognition itself works from stable IDs, aliases, and small island geofences.
-- Lighting evidence is OSM-tag based unless a provider supplies verified municipal lighting data. It is never presented as a safety guarantee.
-
-## Run locally
-
-```bash
-cd PathForAll
+```sh
 npm ci
-npm run dev
+cp .env.example .env
+npm run build
+npm start
 ```
 
-Use Node.js 22.16 or newer. Open the Vite address, normally `http://localhost:5173`.
+Open `http://127.0.0.1:8787`. This starts the walking app and its API. Transit modes remain unavailable until the provider is ready. Search and map data use external sources even in walking-only mode.
 
-## Test and build
+To enable transit, build and start OTP as described in [Transit setup](MTA_INTEGRATION.md), then set these server variables in `.env` and restart PathForAll:
 
-```bash
-npm test
+```dotenv
+OTP_URL=http://127.0.0.1:8080/otp/gtfs/v1
+TRANSIT_MANIFEST=otp-data/manifest.json
+```
+
+```sh
+curl -fsS http://127.0.0.1:8787/api/health
+curl -fsS http://127.0.0.1:8787/api/ready
+npm run evaluate:live
+```
+
+For development, use `npm run dev:server` and `npm run dev` in separate terminals. Uncomment the two same-origin `VITE_ACCESSIBLE_ROUTING_…` URLs in `.env`. Vite proxies `/api/` to the configured local server port. Vite alone supports frontend development without a transit graph.
+
+## Deploy
+
+Run OTP on a private address, with its graph and matching manifest on operator-managed storage. Build the frontend with `npm ci && npm run build` and run `npm start` as an unprivileged service behind an HTTPS reverse proxy. Forward the original host to Node and keep the frontend and `/api/` on the same origin. Serving only `dist/` does not run the API. See [`.env.example`](.env.example) for timeouts, rate limits, and split hosting. For split hosting, explicitly allow exact frontend origins through `ALLOWED_ORIGINS` and set the frontend service URLs before building. Do not put credentials in `VITE_*`.
+
+`/api/health` checks the process. `/api/ready` checks OTP's graph, its route/feed inventory, and schedule dates. Gate a transit deployment on readiness and representative route requests. For a deliberate walking-only deployment, use liveness. The built-in limiter is per observed peer address per process; configure an appropriate rate limit at the reverse proxy when it shares a peer address across clients. Review the usage terms and replace public development geocoding, tiles, and pedestrian data endpoints with services authorized for the deployment volume.
+
+## Accessibility and privacy
+
+A route can contain confirmed accessible features, confirmed barriers, unknown evidence, stale observations, or unavailable data. Strict constraints reject known barriers and required evidence gaps. A user can elect to see routes containing unknowns; doing so does not permit known barriers. Endpoint coordinates and mapped access points are separate. An unverified short gap is disclosed without drawing a walk across it. A live elevator feed or a transit agency's accessible-station label does not establish the condition of a specific connecting path.
+
+Search text and map coordinates are sent to the configured geocoder, map and street data services, and transit provider as needed. Optional weather retrieval also sends coordinates. Browser location access requires permission and a secure origin. Profiles, saved routes, route reviews, and pilot interaction data stay in browser storage; use the app's available clear controls or site settings to remove them. The Node API has no user database and does not log itinerary coordinates or preferences. Operators should apply the same restraint to proxy access logs. Public tile and geocoding services are subject to their own terms and privacy policies.
+
+## Verify and troubleshoot
+
+```sh
+npm run syntax
 npm run lint
 npm run typecheck
+npm test
 npx playwright install chromium
 npm run test:e2e
 npm run build
-npm run preview
+npm audit
+npm run package
 ```
 
-`npm test` covers search/geography, route-trust boundaries, storage recovery, profiles, OSM corridor constraints, normalized provider routes, cards/layer data, time-dependent transit, arrival re-ranking, navigation safeguards, and stale request protection. Browser tests cover keyboard search, route-card semantics, dialog focus, background inertness, automated accessibility checks, responsive viewports, and 200% zoom. `npm run build` produces a production Vite bundle in `dist/`; `dist/` and `node_modules/` are intentionally excluded from source delivery.
+Use `npm run verify` to run the deterministic local checks and package the source. The Playwright install is a separate step; on supported hosts, an existing compatible headless executable can be selected with `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH`. CI's `release-gate` requires the quality and browser jobs. These checks use fixtures and do not require production API credentials. The separate live evaluation uses the actual configured graph.
 
-For a platform-clean verification, remove generated artifacts before installing:
+- **Transit is disabled:** inspect `/api/capabilities` and `/api/ready`. Verify the GraphQL API is running at the configured GTFS endpoint, the manifest matches the graph, and the feed dates are usable.
+- **No result:** the app distinguishes unavailable service, a provider failure, a disconnected access path, an accessibility restriction, and an inconclusive search. Try another mapped entrance or departure time if the message supports that action.
+- **Map or search is blank:** check tile/geocoding connectivity, quota, and usage permissions. The bundled map worker is served from the application origin.
+- **Search, routing, or verification seems time dependent:** time input and schedule output use New York time. A nonexistent DST wall time is rejected; repeated wall times use the earlier occurrence for the wall-time UI. An explicit offset disambiguates API requests.
 
-```bash
-rm -rf node_modules dist .vite
-npm install
-npm test
-npm run typecheck
-npm run lint
-npm run build
-```
-
-Create a source-only ZIP from committed files with Git rather than compressing the working directory:
-
-```bash
-git archive \
-  --format=zip \
-  --output=PathForAll-source.zip \
-  HEAD
-```
-
-The archive excludes `node_modules/`, `dist/`, `.vite/`, `.git/`, `.env`, `.DS_Store`, and `__MACOSX/`. The generated ZIP itself is ignored.
-
-## Using the product
-
-1. Search for both places, use **Current location**, or choose either endpoint directly on the map.
-2. Select Walk, Bus, Subway, Ferry, or Mixed and optionally add one-time trip needs.
-3. Compare route cards for duration, distance, data coverage, critical unknowns, lighting, surface/slope evidence, and transit/elevator status.
-4. Select a route, then choose **Start navigation** for turn-by-turn instructions, ETA, remaining distance, live GPS, preview movement, and automatic rerouting.
-5. Use **Review route data** to save a local field review for a walking segment; marked barriers are excluded on the next calculation.
-
-## Accessibility and safety notes
-
-- Unknown data is not proof that a path is accessible.
-- A route with missing walking, transfer, or transit shape data is rejected or the unverified line is omitted; the app never draws a misleading straight segment.
-- Phone GPS normally requires HTTPS outside `localhost`; indoor station positioning is not reliable.
-- Local field reviews expire after 30 days, remain on this device, and are neither moderated nor shared.
-- Automatic off-route detection is active only during a walking step with sufficiently accurate GPS. Vehicle legs do not trigger pedestrian rerouting.
-- This project supports research and testing. People should confirm time-sensitive elevator, construction, and service conditions with the relevant transit agency before travel.
-
-## Key files
-
-```text
-app.js                       Map UI, selection, planning, navigation, local workflow
-search-controller.js         Search requests, combobox state, keyboard behavior
-route-model.js               Shared RouteOption validation and adapters
-route-service.js             Server-route adapter
-transit-network-service.js   Provider topology loader
-transit-routing.js           Time-dependent accessibility-aware transit algorithm
-transit-realtime.js          Provider-only arrival integration
-ferry-service.js             Statue City Cruises destination and terminal policy
-route-presentation.js        Safe route-card view model/markup
-route-layer-data.js          Verified GeoJSON map features
-route-session.js             Abort/stale-request protection
-storage-adapter.js           Versioned local-storage recovery and error surface
-fetch-client.js              Shared timeout, retry, and HTTP error policy
-tests/fixtures/              Test-only Cooper Union teaching data
-tests/e2e/                   Playwright keyboard, accessibility, and viewport checks
-```
+Data attribution: [OpenStreetMap contributors (ODbL)](https://www.openstreetmap.org/copyright), [BBBike extracts](https://download.bbbike.org/osm/bbbike/), [MTA developer resources](https://www.mta.info/developers), [Photon](https://github.com/komoot/photon), [Open-Meteo](https://open-meteo.com/), and [OpenTripPlanner](https://www.opentripplanner.org/). Source and runtime data have different terms. See [architecture](docs/architecture.md) and [transit setup](MTA_INTEGRATION.md) for provider boundaries and known limits.
