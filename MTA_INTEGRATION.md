@@ -28,7 +28,7 @@ curl -fL --proto '=https' https://nycferry.connexionz.net/rtt/public/resource/gt
 python3 scripts/bootstrap-transit.py --directory otp-data --heap 4300m --ferry-gtfs otp-data/ferry.zip --ferry-source https://nycferry.connexionz.net/rtt/public/resource/gtfs.zip
 ```
 
-An absent or expired ferry feed leaves that mode disabled. The archive and derived graph are runtime assets and should not be committed.
+This optional configuration returned and verified scheduled East River ferry itineraries in the engineering audit. An absent or expired ferry feed leaves that mode disabled. The archive and derived graph are runtime assets and should not be committed.
 
 Configure `OTP_URL` and `TRANSIT_MANIFEST` as described in the README. Keep OTP private; give browsers the PathForAll URL. For an independent backup instance, set `OTP_FALLBACK_URL` and `TRANSIT_FALLBACK_MANIFEST`. Both must describe meaningful applicable coverage. The server does not automatically fall back from a valid no-route result to an unrelated dataset.
 

@@ -300,13 +300,23 @@ export function createOtpProvider({
       if (!routes.length) {
         const routingCodes = data.planConnection.routingErrors
           .map((error) => error?.code)
-          .filter((code) => OTP_FAILURES[code]);
+          .filter(
+            (code) => typeof code === "string" && /^[A-Z_]{1,64}$/.test(code),
+          )
+          .slice(0, 12);
+        // NO_TRANSIT_CONNECTION describes the whole constrained search. It
+        // does not establish that scheduled vehicles were absent.
+        const genericFailure =
+          request.needs.wheelchairMode &&
+          routingCodes.includes("NO_TRANSIT_CONNECTION")
+            ? "INSUFFICIENT_ACCESSIBILITY_EVIDENCE"
+            : "NO_FEASIBLE_ROUTE";
         const code = rejected.length
           ? REJECTION_PRIORITY.find((value) =>
               rejected.some((item) => item.code === value),
             ) || rejected[0].code
-          : routingCodes.map((value) => OTP_FAILURES[value])[0] ||
-            "NO_FEASIBLE_ROUTE";
+          : routingCodes.map((value) => OTP_FAILURES[value]).find(Boolean) ||
+            genericFailure;
         throw transitError(code, { rejected, routingCodes });
       }
       routes.sort(
@@ -327,7 +337,6 @@ const OTP_FAILURES = Object.freeze({
   OUTSIDE_SERVICE_PERIOD: "TRANSIT_DATA_STALE",
   LOCATION_NOT_FOUND: "ENDPOINT_CONNECTOR_UNAVAILABLE",
   NO_STOPS_IN_RANGE: "ENDPOINT_CONNECTOR_UNAVAILABLE",
-  NO_TRANSIT_CONNECTION: "NO_SERVICE_AT_THIS_TIME",
   NO_TRANSIT_CONNECTION_IN_SEARCH_WINDOW: "SEARCH_LIMIT_REACHED",
   WALKING_BETTER_THAN_TRANSIT: "NO_FEASIBLE_ROUTE",
 });

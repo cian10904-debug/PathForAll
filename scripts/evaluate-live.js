@@ -222,6 +222,8 @@ if (
   results.some(
     (result) =>
       result.routes?.some((route) => !route.validation.valid) ||
+      (result.id === "strict-wheelchair" &&
+        result.code === "NO_SERVICE_AT_THIS_TIME") ||
       (result.expected && result.code !== result.expected),
   ) ||
   !results.some(

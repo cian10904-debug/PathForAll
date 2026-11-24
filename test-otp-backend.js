@@ -99,6 +99,10 @@ await reject(() => provider(() => new Response("not JSON")).plan(request("bus"))
 await reject(() => provider(() => Response.json({ errors: [{ message: "not exposed" }], data: null })).plan(request("bus")), "PROVIDER_CONTRACT_ERROR");
 await reject(() => provider(() => Response.json({ data: { planConnection: { edges: [], routingErrors: [{ code: "NO_STOPS_IN_RANGE" }] } } })).plan(request("bus")), "ENDPOINT_CONNECTOR_UNAVAILABLE");
 await reject(() => provider(() => Response.json({ data: { planConnection: { edges: [], routingErrors: [{ code: "NO_TRANSIT_CONNECTION_IN_SEARCH_WINDOW" }] } } })).plan(request("bus")), "SEARCH_LIMIT_REACHED");
+const noConnection = provider(() => Response.json({ data: { planConnection: { edges: [], routingErrors: [{ code: "NO_TRANSIT_CONNECTION" }] } } }));
+await reject(() => noConnection.plan(request("bus")), "NO_FEASIBLE_ROUTE");
+await assert.rejects(() => noConnection.plan(request("bus", { wheelchairMode: true })), error =>
+  error.code === "INSUFFICIENT_ACCESSIBILITY_EVIDENCE" && error.details.routingCodes[0] === "NO_TRANSIT_CONNECTION");
 await reject(() => provider([]).plan({ ...request("bus"), departureTime: "2027-01-03T15:00Z" }), "TRANSIT_DATA_STALE");
 
 const server = createAppServer({

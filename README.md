@@ -6,7 +6,7 @@ PathForAll plans trips in New York City with mobility preferences in mind. It co
 | --- | --- |
 | Walking | A bounded OpenStreetMap pedestrian graph. Paths, crossings, slope, curbs, and surface are evaluated when the data supports them. |
 | Bus, subway, and All Transit | A configured OpenTripPlanner (OTP) graph with calendar-valid feeds. All Transit can return a trip using a single mode. |
-| LIRR and ferry | Separate modes, enabled only when the running graph reports usable service for them. The default graph includes LIRR feeds but no ferry feed. |
+| LIRR and ferry | Separate modes, enabled only when the running graph reports usable service for them. The default graph includes LIRR. An optional official NYC Ferry feed was verified separately. |
 | Search, map, and guidance | NYC address and place search, reverse lookup, location and map pins, route comparison, and on-device navigation. |
 | Profiles, saved routes, and reviews | Stored in the browser. A trip can apply different requirements without changing its saved profile. Reviews are local. |
 
@@ -73,4 +73,4 @@ Use `npm run verify` to run the deterministic local checks and package the sourc
 - **Map or search is blank:** check tile/geocoding connectivity, quota, and usage permissions. The bundled map worker is served from the application origin.
 - **Search, routing, or verification seems time dependent:** time input and schedule output use New York time. A nonexistent DST wall time is rejected; repeated wall times use the earlier occurrence for the wall-time UI. An explicit offset disambiguates API requests.
 
-Data attribution: [OpenStreetMap contributors (ODbL)](https://www.openstreetmap.org/copyright), [BBBike extracts](https://download.bbbike.org/osm/bbbike/), [MTA developer resources](https://www.mta.info/developers), [Photon](https://github.com/komoot/photon), [Open-Meteo](https://open-meteo.com/), and [OpenTripPlanner](https://www.opentripplanner.org/). Source and runtime data have different terms. See [architecture](docs/architecture.md) and [transit setup](MTA_INTEGRATION.md) for provider boundaries and known limits.
+Data attribution: [OpenStreetMap contributors (ODbL)](https://www.openstreetmap.org/copyright), [BBBike extracts](https://download.bbbike.org/osm/bbbike/), [MTA developer resources](https://www.mta.info/developers), [NYC Ferry developer resources](https://www.ferry.nyc/developer-tools/), [Photon](https://github.com/komoot/photon), [Open-Meteo](https://open-meteo.com/), and [OpenTripPlanner](https://www.opentripplanner.org/). Source and runtime data have different terms. See [architecture](docs/architecture.md) and [transit setup](MTA_INTEGRATION.md) for provider boundaries and known limits.

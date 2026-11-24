@@ -14,7 +14,7 @@ export const TRANSIT_ERROR_MESSAGES = Object.freeze({
   NO_SERVICE_AT_THIS_TIME: "No scheduled connection was found within the provider's service search. Try another time.",
   NO_VALID_TRANSFER: "A connection was found, but the transfer could not be made in time.",
   ACCESSIBILITY_CONSTRAINT_BLOCKED: "The options found conflict with one or more of your accessibility requirements.",
-  INSUFFICIENT_ACCESSIBILITY_EVIDENCE: "The options found are missing evidence required by your accessibility settings. Review the missing conditions or choose another route.",
+  INSUFFICIENT_ACCESSIBILITY_EVIDENCE: "We could not confirm a route that meets your accessibility settings. Try a different mapped entrance or another departure time.",
   SEARCH_LIMIT_REACHED: "The search reached its time or coverage limit. Try a shorter trip or a different departure time.",
   NO_FEASIBLE_ROUTE: "No usable route was found within the searched area and your trip limits.",
   REQUEST_CANCELLED: "Route calculation cancelled.",
