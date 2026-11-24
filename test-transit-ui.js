@@ -3,22 +3,24 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
-const [html, css, app] = await Promise.all([
+const [html, css, app, mapIntegration] = await Promise.all([
   readFile("index.html", "utf8"),
   readFile("styles.css", "utf8"),
-  readFile("app.js", "utf8")
+  readFile("app.js", "utf8"),
+  readFile("map-integration.js", "utf8")
 ]);
 
-for (const mode of ["walk", "bus", "subway", "ferry", "mixed"]) {
+for (const mode of ["walk", "bus", "subway", "ferry", "rail", "mixed"]) {
   assert.match(html, new RegExp(`data-mode="${mode}"`), `${mode} has a mode control`);
 }
-assert.match(css, /grid-template-columns:\s*repeat\(5,\s*minmax\(0,\s*1fr\)\)/, "all five modes share the responsive row");
+assert.match(css, /grid-template-columns:\s*repeat\(6,\s*minmax\(0,\s*1fr\)\)/, "all six modes share the responsive row");
 assert.match(html, /class="mode-row"[^>]*aria-describedby="transitModeAvailability"/, "mode availability guidance describes the travel-mode group");
 assert.match(html, /Route line legend/);
 assert.match(html, />Ferry</);
 assert.match(app, /selected-ferry/);
-assert.match(app, /\["selected-walk", "selected-bus", "selected-subway", "selected-ferry"\]/, "all map layers are cleared together");
-assert.equal((app.match(/new maplibregl\.Map/g) || []).length, 1, "the application initializes one map");
+assert.match(app, /\["selected-walk", "selected-bus", "selected-subway", "selected-ferry", "selected-rail"\]/, "all map layers are cleared together");
+assert.equal(((app + mapIntegration).match(/new maplibregl\.Map/g) || []).length, 1, "the application initializes one map through its map adapter");
+assert.equal((app.match(/createBaseMap\(/g) || []).length, 1, "the map adapter is called once");
 assert.match(app, /document\.body\.classList\.add\("map-pick-active"\)/);
 assert.match(app, /document\.body\.classList\.remove\("map-pick-active"\)/);
 assert.match(app, /beginMapPointSelection[\s\S]*?requestMapResize\(\)/, "map-pick entry schedules a resize on the existing map");

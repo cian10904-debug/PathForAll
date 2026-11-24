@@ -17,6 +17,8 @@ const subway = beginPlan("subway", subwayWork.promise);
 assert.equal(bus.request.signal.aborted, true, "starting a new mode cancels the earlier request");
 assert.equal(bus.request.isCurrent(), false, "the earlier request cannot commit after a mode switch");
 assert.equal(subway.request.isCurrent(), true);
+bus.request.cancel();
+assert.equal(subway.request.signal.aborted, false, "cancelling an old request cannot abort its successor");
 assert.deepEqual(start.coordinates, [-73.9900, 40.7300], "mode switching preserves the start location");
 assert.deepEqual(end.coordinates, [-73.9850, 40.7340], "mode switching preserves the destination");
 assert.equal(needs.requireElevator, true, "mode switching preserves trip requirements");

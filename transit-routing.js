@@ -1,11 +1,14 @@
 "use strict";
 
-import { PROFILE_WEIGHTS, dijkstra, summarizeRoute } from "./routing.js";
+import { PROFILE_WEIGHTS, MinHeap, dijkstra, summarizeRoute } from "./routing.js";
 import { findNearestNode, haversineMeters } from "./osm-network.js";
 import { accessiblePathSupports } from "./elevator-status.js";
 import { lineGeometry } from "./route-model.js";
 
-const TRANSIT_MODES = new Set(["bus", "subway", "ferry"]);
+import { localDateKey, serviceInstant, shiftDateKey } from "./agency-time.js";
+import { matchesSearchMode, searchMode, VEHICLE_MODES as TRANSIT_MODES } from "./transit-modes.js";
+import { assessEdge } from "./accessibility.js";
+const MAX_LABELS = 30_000;
 
 // Production callers provide provider-derived stops and directed topology.
 export function prepareTransitStops(pedestrianNodes, transitStops = [], options = {}) {
@@ -51,31 +54,22 @@ export function isBoardingStopUsable(stop, needs = {}, travelMode = null, contex
     && stop.snapStatus !== "valid") return false;
   if (travelMode === "subway" && !isStreetEntrance(stop)) return false;
   if (!needs?.wheelchairMode && !needs?.requireElevator && !needs?.avoidStairs && !needs?.requireCurb && !needs?.requireVerifiedCurbAccess) return true;
-  if (stop.wheelchairAccessible === false) return false;
+  if (needs.wheelchairMode && stop.wheelchairAccessible === false) return false;
   const modes = travelMode ? [travelMode] : (stop.modes || []);
   if (modes.includes("subway") && (needs.wheelchairMode || needs.requireElevator || needs.avoidStairs)) {
-    if (!Array.isArray(stop.accessiblePaths) || !stop.accessiblePaths.length) return false;
-    const action = context.action || "boarding";
-    const platformStopId = action === "exit"
-      ? context.edge?.toPlatformStopId || context.edge?.platformStopId || stop.platformStopId
-      : context.edge?.fromPlatformStopId || context.edge?.platformStopId || stop.platformStopId;
-    const directionId = context.edge?.directionId || stop.directionId;
-    if (!platformStopId) return false;
-    if (!stop.accessiblePaths.some(path => accessiblePathSupports(path, action, {
-      platformStopId,
-      directionId,
-      requireCompletePath: true
-    }))) return false;
+    const status = stationPathFor(stop, context.edge, context.action || "boarding");
+    if (!status && (needs.unknownPolicy !== "allow" || stop.accessiblePaths?.some(path => path.status === "out" && path.freshness === "current"))) return false;
   }
   if (modes.includes("bus") && (needs.wheelchairMode || needs.requireCurb || needs.requireVerifiedCurbAccess)) {
     if (stop.curbAccess === false) return false;
-    if (stop.curbAccess !== true && needs.requireVerifiedCurbAccess) return false;
+    if (stop.curbAccess !== true && (needs.requireVerifiedCurbAccess || needs.unknownPolicy !== "allow")) return false;
   }
   if (modes.includes("ferry") && stop.gangwayAccessible === false) return false;
   return true;
 }
 
 export function isExitStopUsable(stop, needs, travelMode = null, context = {}) {
+  if (context.edge?.dropOffAllowed === false || context.edge?.alightingSkipped === true) return false;
   return isBoardingStopUsable(stop, needs, travelMode, { ...context, action: "exit" });
 }
 
@@ -92,28 +86,42 @@ export function planTransitRoutes({
   pedestrianEdges,
   startId,
   endId,
-  needs = {},
+  needs = /** @type {import("./domain.js").Needs} */ ({}),
   weather = {},
   mode,
   transitStops = [],
   transitEdges = [],
   departureTime = new Date(),
-  candidateSearch = {}
+  candidateSearch = { maxCandidates: 32, maxEvaluations: 64 },
+  diagnostics = { code: "" }
 }) {
-  if (!["bus", "subway", "ferry", "mixed"].includes(mode)) return [];
+  mode = searchMode(mode);
+  if (!(TRANSIT_MODES.has(mode) || mode === "mixed")) return [];
+  const startTime = +new Date(departureTime);
+  if (!Number.isFinite(startTime)) return [];
+  diagnostics.code = "ENDPOINT_CONNECTOR_UNAVAILABLE";
   const startCoordinates = pedestrianNodes?.[startId]?.coordinates;
   const endCoordinates = pedestrianNodes?.[endId]?.coordinates;
   if (!startCoordinates || !endCoordinates) return [];
   const stopMap = new Map(transitStops.filter(isPassThroughStopUsable).map(stop => [stop.id, stop]));
-  const edges = transitEdges.filter(edge => validTransitEdge(edge, stopMap) && isTransitEdgeActive(edge, departureTime));
-  if (!stopMap.size || !edges.length) return [];
+  const edges = transitEdges.filter(edge => validTransitEdge(edge, stopMap) && edgeAllowed(edge, mode));
+  if (!stopMap.size || !edges.length) {
+    diagnostics.code = !stopMap.size ? "NO_NEARBY_STOP" : "SCHEDULE_UNAVAILABLE";
+    return [];
+  }
+  const adjacency = new Map([...stopMap.keys()].map(id => [id, []]));
+  for (const edge of edges) {
+    adjacency.get(edge.from)?.push({ edge, next: edge.to, reverse: false });
+    if (edge.bidirectional === true) adjacency.get(edge.to)?.push({ edge, next: edge.from, reverse: true });
+  }
   const endpointStops = [...stopMap.values()].filter(stop => supportsRequestedEndpointMode(stop, mode));
   const weights = needs.wheelchairMode || needs.requireElevator ? PROFILE_WEIGHTS.accessible : PROFILE_WEIGHTS.balanced;
   const walkingCache = new Map();
   const maxWalkMinutes = Math.max(1, Number(needs.maxWalkMinutes || 12));
   const search = {
-    maxCandidates: Math.max(4, Number(candidateSearch.maxCandidates || 32)),
-    maxEvaluations: Math.max(8, Number(candidateSearch.maxEvaluations || 64))
+    maxCandidates: Math.min(32, Math.max(4, Number(candidateSearch.maxCandidates || 32))),
+    maxEvaluations: Math.min(64, Math.max(8, Number(candidateSearch.maxEvaluations || 64))),
+    limited: false
   };
   const entries = buildEndpointCandidates({
     stops: endpointStops,
@@ -151,16 +159,22 @@ export function planTransitRoutes({
   });
   const itineraries = [];
 
-  for (const entryCandidate of entries) {
-    const { stop: entry, walking: access } = entryCandidate;
-    for (const exitCandidate of exits) {
-      const { stop: exit, walking: egress } = exitCandidate;
-      if (entry.id === exit.id) continue;
-      const transit = transitDijkstra(entry.id, exit.id, stopMap, edges, mode, needs, departureTime);
-      if (!transit?.edges.length) continue;
+  if (!entries.length || !exits.length) {
+    diagnostics.code = search.limited ? "SEARCH_LIMIT_REACHED" : endpointStops.some(stop => !stop.pedestrianNodeId)
+      ? "ENDPOINT_CONNECTOR_UNAVAILABLE" : "NO_FEASIBLE_ROUTE";
+    return [];
+  }
+  const exitMap = new Map(exits.map(item => [item.stop.id, item]));
+  const searchBudget = { remaining: MAX_LABELS, limited: false, constraint: false, evidence: false };
+  for (const { stop: entry, walking: access } of entries) {
+    const accessSeconds = walkingSecondsFor(access, entry);
+    const transits = transitSearch(entry, exitMap, stopMap, adjacency, needs, startTime + accessSeconds * 1_000, maxWalkMinutes * 60 - accessSeconds, searchBudget);
+    for (const [stopId, transit] of transits) {
+      const { stop: exit, walking: egress } = exitMap.get(stopId);
+      const egressSeconds = walkingSecondsFor(egress, exit);
       const itinerary = {
         key: `${mode}-${entry.id}-${exit.id}-${transit.signature}`,
-        label: mode === "mixed" ? "Accessible mixed transit" : `Accessible ${mode}`,
+        label: "Transit route",
         optionLabel: "Alternative",
         entryStop: entry,
         exitStop: exit,
@@ -170,19 +184,19 @@ export function planTransitRoutes({
         departureTime: departureTime instanceof Date
           ? departureTime.toISOString()
           : new Date(departureTime).toISOString(),
-        totalMinutes: access.metrics.minutes + (transit.durationSeconds + transit.totalWaitSeconds) / 60 + egress.metrics.minutes,
-        walkingMinutes: access.metrics.minutes + egress.metrics.minutes,
+        totalMinutes: (accessSeconds + transit.durationSeconds + transit.totalWaitSeconds + egressSeconds) / 60,
+        walkingMinutes: (accessSeconds + transit.walkingSeconds + egressSeconds) / 60,
         transitMinutes: transit.durationSeconds / 60,
         transfers: transit.transfers,
         warnings: [
           ...ferryWarnings(transit.edges),
-          ...curbAccessWarnings(entry, exit, needs),
+          ...curbAccessWarnings(entry, exit),
           ...connectorWarnings(entry, exit),
           ...subwayPathWarnings(transit.edges, stopMap)
         ],
-        score: access.metrics.minutes
+        score: accessSeconds / 60
           + transit.scoreSeconds / 60
-          + egress.metrics.minutes
+          + egressSeconds / 60
           + curbUncertaintyPenalty(entry, needs)
           + curbUncertaintyPenalty(exit, needs)
       };
@@ -190,10 +204,13 @@ export function planTransitRoutes({
       if (validation.valid) itineraries.push(itinerary);
     }
   }
+  diagnostics.code = itineraries.length ? "" : search.limited || searchBudget.limited ? "SEARCH_LIMIT_REACHED"
+    : searchBudget.evidence ? "INSUFFICIENT_ACCESSIBILITY_EVIDENCE"
+      : searchBudget.constraint ? "ACCESSIBILITY_CONSTRAINT_BLOCKED" : "NO_FEASIBLE_ROUTE";
   return rankAlternatives(itineraries, needs).slice(0, 3);
 }
 
-export function validateTransitItinerary(itinerary, { mode, needs = {}, startCoordinates, endCoordinates, stopMap = new Map() } = {}) {
+export function validateTransitItinerary(itinerary, { mode = null, needs = {}, startCoordinates = null, endCoordinates = null, stopMap = new Map() } = {}) {
   const reasons = [];
   const edges = itinerary?.transit?.edges || [];
   if (!edges.length) reasons.push("itinerary has no transit movement");
@@ -208,14 +225,13 @@ export function validateTransitItinerary(itinerary, { mode, needs = {}, startCoo
     const logicalId = `${edge.id}:${edge.reverse ? "reverse" : "forward"}`;
     if (ids.has(logicalId)) reasons.push("transit edge is duplicated");
     ids.add(logicalId);
-    const logicalEdge = `${edge.mode}:${edge.reverse ? edge.to : edge.from}:${edge.reverse ? edge.from : edge.to}:${edge.route || ""}`;
+    const logicalEdge = `${edge.mode}:${edge.reverse ? edge.to : edge.from}:${edge.reverse ? edge.from : edge.to}:${edge.tripId || edge.route || ""}`;
     if (logicalEdges.has(logicalEdge)) reasons.push("transit edge is logically duplicated");
     logicalEdges.add(logicalEdge);
     if (!Number.isFinite(Number(edge.minutes)) || Number(edge.minutes) < 0) reasons.push("transit edge has invalid duration");
     if (!validCoordinates(from?.coordinates) || !validCoordinates(to?.coordinates)) reasons.push("transit edge has invalid coordinate order");
     if (previousTo && previousTo !== (edge.reverse ? edge.to : edge.from)) reasons.push("transit edges are disconnected");
-    if (edge.mode === "transfer" && (!isTransferStopUsable(from, needs, null, { edge }) || !isTransferStopUsable(to, needs, null, { edge }))) reasons.push("transfer location is not accessible");
-    if (edge.mode === "transfer" && (edge.providerConfirmed !== true || edge.geometryVerified !== true || edge.accessiblePathComplete !== true)) reasons.push("transfer is not provider-confirmed with a complete accessible path");
+    if (edge.mode === "transfer" && (edge.providerConfirmed !== true || edge.geometryVerified !== true)) reasons.push("transfer is not provider-confirmed with real geometry");
     if (edge.mode === "transfer" && (!Number.isFinite(Number(edge.minimumTransferSeconds)) || Number(edge.minimumTransferSeconds) < 0)) reasons.push("transfer has no provider minimum connection time");
     if (edge.mode === "transfer" && from && to && haversineMeters(from.coordinates, to.coordinates) > 750 && !edge.geometryVerified) reasons.push("transfer geometry has an implausible geographic gap");
     if (edge.geometryVerified === true && !geometryConnectsStops(edge.geometry, from, to, edge.reverse)) reasons.push("transit edge geometry does not connect to its stops");
@@ -224,11 +240,8 @@ export function validateTransitItinerary(itinerary, { mode, needs = {}, startCoo
     previousTo = edge.reverse ? edge.from : edge.to;
     if (index === 0 && previousTo == null) reasons.push("itinerary starts with an invalid transit edge");
   }
-  const activeModes = new Set(edges.filter(edge => TRANSIT_MODES.has(edge.mode)).map(edge => edge.mode));
-  if (mode === "bus" && (activeModes.size !== 1 || !activeModes.has("bus"))) reasons.push("bus itinerary contains invalid modes");
-  if (mode === "subway" && (activeModes.size !== 1 || !activeModes.has("subway"))) reasons.push("subway itinerary contains invalid modes");
-  if (mode === "ferry" && (activeModes.size !== 1 || !activeModes.has("ferry"))) reasons.push("ferry itinerary contains invalid modes");
-  if (mode === "mixed" && activeModes.size < 2) reasons.push("mixed itinerary must contain at least two vehicle modes");
+  const activeModes = [...new Set(edges.filter(edge => TRANSIT_MODES.has(edge.mode)).map(edge => edge.mode))];
+  if (!activeModes.length || !matchesSearchMode(mode, activeModes)) reasons.push("itinerary does not match the requested mode");
   const firstEdge = edges[0];
   const lastEdge = edges.at(-1);
   const firstStopId = firstEdge && (firstEdge.reverse ? firstEdge.to : firstEdge.from);
@@ -242,127 +255,106 @@ export function validateTransitItinerary(itinerary, { mode, needs = {}, startCoo
   return { valid: reasons.length === 0, reasons };
 }
 
-function transitDijkstra(startStopId, endStopId, stopMap, edges, requestedMode, needs, departureTime = new Date()) {
-  const adjacency = new Map([...stopMap.keys()].map(id => [id, []]));
-  for (const edge of edges) {
-    if (!edgeAllowed(edge, requestedMode)) continue;
-    adjacency.get(edge.from)?.push({ edge, next: edge.to, reverse: false });
-    // Only reverse a vehicle edge when the provider explicitly asserts both directions.
-    if (edge.bidirectional === true) adjacency.get(edge.to)?.push({ edge, next: edge.from, reverse: true });
-  }
-  const initial = stateKey(startStopId, null, 0, false);
-  const distances = new Map([[initial, 0]]);
-  const previous = new Map();
-  const requestedDeparture = departureTime instanceof Date ? departureTime : new Date(departureTime);
-  if (!Number.isFinite(requestedDeparture.getTime())) return null;
-  const queue = [{
-    stopId: startStopId,
-    activeVehicle: null,
-    usedMask: 0,
-    hasBoarded: false,
-    boardings: 0,
-    durationSeconds: 0,
-    waitSeconds: 0,
-    arrivalTimeMs: requestedDeparture.getTime(),
-    score: 0
-  }];
-  let bestEnd = null;
+function walkingSecondsFor(walking, stop) {
+  return walking.metrics.minutes * 60 + (Number(stop.connectorDistanceMeters) > 1 ? Math.ceil(stop.connectorDistanceMeters / 1.15) : 0);
+}
 
-  while (queue.length) {
-    queue.sort((a, b) => a.score - b.score);
-    const current = queue.shift();
-    const currentKey = stateKey(current.stopId, current.activeVehicle, current.usedMask, current.hasBoarded);
-    if (!current || current.score !== distances.get(currentKey)) continue;
-    if (current.stopId === endStopId && modeSatisfied(current.usedMask, requestedMode)) {
-      bestEnd = { ...current, key: currentKey };
-      break;
+// A label includes time, remaining walking budget, number of boardings and a
+// directed trip identity. Earlier arrival may wait, but a later cheap label
+// cannot eliminate an earlier one that can make a connection.
+function transitSearch(entry, exits, stopMap, adjacency, needs, earliest, walkBudget, budget) {
+  const queue = new MinHeap();
+  const labels = new Map();
+  const results = new Map();
+  const initial = { stopId: entry.id, vehicle: null, boardings: 0, time: earliest, walk: 0, penalty: 0, priority: 0, minConnection: 0, previous: null, step: null, alive: true };
+  queue.push(initial);
+  while (queue.size) {
+    if (--budget.remaining < 0) { budget.limited = true; break; }
+    const current = queue.pop();
+    if (!current.alive) continue;
+    const currentStop = stopMap.get(current.stopId);
+    const exit = exits.get(current.stopId);
+    if (exit && current.stopId !== entry.id && current.vehicle && !results.has(current.stopId)
+      && current.walk + walkingSecondsFor(exit.walking, exit.stop) <= walkBudget + .01
+      && isExitStopUsable(currentStop, needs, current.step.mode, { edge: current.step })) {
+      results.set(current.stopId, summarizeTransit(current));
     }
-    for (const neighbor of adjacency.get(current.stopId) || []) {
-      const { edge, next, reverse } = neighbor;
-      const fromStop = stopMap.get(current.stopId);
-      const toStop = stopMap.get(next);
-      if (!fromStop || !toStop || !isPassThroughStopUsable(toStop)) continue;
-      if (edge.mode === "transfer" && (!isTransferStopUsable(fromStop, needs, null, { edge }) || !isTransferStopUsable(toStop, needs, null, { edge }))) continue;
-      if (edge.mode !== "transfer" && needs.wheelchairMode && edge.wheelchairAccessible === false) continue;
-      const vehicle = edge.mode === "transfer" ? null : vehicleKey(edge, reverse);
-      const isBoarding = edge.mode !== "transfer" && current.activeVehicle !== vehicle;
-      if (isBoarding && !isBoardingStopUsable(fromStop, needs, edge.mode, { edge })) continue;
-      const scheduledWaitSeconds = isBoarding
-        ? nextBoardingWaitSeconds(edge, new Date(current.arrivalTimeMs))
-        : 0;
-      if (isBoarding && scheduledWaitSeconds == null) continue;
-      // Walking/station transfer legs end a ride; reboarding the same line is
-      // still another boarding and therefore another transfer when appropriate.
-      const nextVehicle = vehicle;
-      const usedMask = current.usedMask | modeMask(edge.mode);
-      const boardings = current.boardings + (isBoarding ? 1 : 0);
-      const hasBoarded = current.hasBoarded || isBoarding;
-      const transferPenaltySeconds = isBoarding && current.hasBoarded ? (needs.minimizeTransfers ? 360 : 150) : 0;
-      const edgeDurationSeconds = edge.mode === "transfer"
-        ? Math.max(Number(edge.minutes) * 60, Number(edge.minimumTransferSeconds || 0))
-        : Number(edge.minutes) * 60;
-      const nextDurationSeconds = current.durationSeconds + edgeDurationSeconds + Number(scheduledWaitSeconds || 0);
-      const nextScore = current.score + edgeDurationSeconds + Number(scheduledWaitSeconds || 0) + transferPenaltySeconds;
-      const nextKey = stateKey(next, nextVehicle, usedMask, hasBoarded);
-      if (nextScore >= (distances.get(nextKey) ?? Infinity)) continue;
-      distances.set(nextKey, nextScore);
-      previous.set(nextKey, {
-        previousKey: currentKey,
-        edge: {
-          ...edge,
-          reverse,
-          scheduledWaitSeconds: Number(scheduledWaitSeconds || 0),
-          waitSource: isBoarding ? "scheduled" : undefined
-        },
-        stopId: current.stopId,
-        boardings
-      });
-      queue.push({
-        stopId: next,
-        activeVehicle: nextVehicle,
-        usedMask,
-        hasBoarded,
-        boardings,
-        durationSeconds: nextDurationSeconds,
-        waitSeconds: current.waitSeconds + Number(scheduledWaitSeconds || 0),
-        arrivalTimeMs: requestedDeparture.getTime() + nextDurationSeconds * 1000,
-        score: nextScore
-      });
+    if (results.size === exits.size) break;
+    for (const { edge, next, reverse } of adjacency.get(current.stopId) || []) {
+      const transfer = edge.mode === "transfer";
+      if (!serviceAvailable(edge, current.time)) continue;
+      const nextStop = stopMap.get(next);
+      if (!nextStop || !isPassThroughStopUsable(nextStop)) continue;
+      const vehicle = transfer ? null : vehicleKey(edge, reverse);
+      const continuing = vehicle && current.vehicle === vehicle
+        && (current.step?.toSequence == null || edge.fromSequence == null || current.step.toSequence === edge.fromSequence);
+      const boarding = !transfer && !continuing;
+      if ((!current.boardings && transfer) || (!boarding && !transfer && current.step?.id === edge.id)) continue;
+      if (current.vehicle && !continuing && !isExitStopUsable(currentStop, needs, current.step.mode, { edge: current.step })) continue;
+      if (boarding && !isBoardingStopUsable(currentStop, needs, edge.mode, { edge })) { budget.evidence = true; continue; }
+      if (boarding && (edge.pickupAllowed === false || edge.boardingSkipped === true)) continue;
+      if (needs.wheelchairMode && !transfer && edge.wheelchairAccessible !== true) {
+        if (edge.wheelchairAccessible === false) { budget.constraint = true; continue; }
+        if (needs.unknownPolicy !== "allow") { budget.evidence = true; continue; }
+      }
+      const boardings = current.boardings + (boarding ? 1 : 0);
+      if (boardings > 4) { budget.limited = true; continue; }
+      const duration = Math.round(edge.minutes * 60);
+      const walk = current.walk + (transfer ? duration : 0);
+      if (walk > walkBudget + .01) continue;
+      if (transfer) {
+        if (!geometryConnectsStops(edge.geometry, currentStop, nextStop, reverse)) continue;
+        const assessment = assessEdge({ ...edge.accessibility, id: edge.id, distanceMeters: 0, minutes: edge.minutes, crossingsUnknown: edge.accessiblePathComplete !== true }, needs);
+        if (!assessment.eligible) {
+          if (assessment.violations.length) budget.constraint = true;
+          else budget.evidence = true;
+          continue;
+        }
+      }
+      const minConnection = boarding ? Math.max(Number(edge.minimumBoardingSeconds) || 0, current.boardings ? current.minConnection : 0) : 0;
+      const eligible = current.time + minConnection * 1_000;
+      const departure = transfer ? { time: current.time, day: "" } : nextBoarding(edge, eligible, continuing ? current.step.serviceDate : null);
+      if (!departure || (continuing && departure.time - current.time > 600_000)) continue;
+      const time = departure.time + duration * 1_000;
+      if (time - earliest > 6 * 3_600_000) { budget.limited = true; continue; }
+      const wait = (departure.time - current.time) / 1_000;
+      const penalty = current.penalty + (boarding && current.boardings ? needs.minimizeTransfers ? 360 : 150 : 0);
+      const priority = (time - earliest) / 1_000 + penalty;
+      const requiredAfterWalking = transfer ? Math.max(0, Number(edge.minimumTransferSeconds || 0) - duration) : 0;
+      const key = JSON.stringify([next, vehicle, boardings, departure.day, requiredAfterWalking, transfer ? null : edge.toSequence || null]);
+      const comparable = labels.get(key) || [];
+      if (comparable.some(item => item.alive && item.time <= time && item.walk <= walk && item.penalty <= penalty)) continue;
+      for (const item of comparable) if (time <= item.time && walk <= item.walk && penalty <= item.penalty) item.alive = false;
+      const step = { ...edge, reverse, serviceDate: departure.day?.replaceAll("-", ""), staySeated: Boolean(continuing),
+        scheduledWaitSeconds: wait, minimumBoardingSeconds: minConnection, durationSeconds: duration,
+        departureTime: new Date(departure.time).toISOString(), arrivalTime: new Date(time).toISOString(),
+        waitSource: transfer ? undefined : edge.frequency && !edge.departures?.length ? "frequency" : "scheduled",
+        boardingPath: boarding ? stationPathFor(currentStop, edge, "boarding") : undefined,
+        exitPath: !transfer ? stationPathFor(nextStop, edge, "exit") : undefined };
+      const label = { stopId: next, vehicle, boardings, time, walk, penalty, priority, previous: current, step, alive: true, minConnection: requiredAfterWalking };
+      labels.set(key, [...comparable.filter(item => item.alive), label]);
+      queue.push(label);
     }
   }
-  if (!bestEnd) return null;
-  const routeEdges = [];
-  let cursor = bestEnd.key;
-  while (cursor !== initial) {
-    const step = previous.get(cursor);
-    if (!step) return null;
-    routeEdges.unshift(step.edge);
-    cursor = step.previousKey;
-  }
-  const durationSeconds = routeEdges.reduce((sum, edge) => sum + (edge.mode === "transfer"
-    ? Math.max(Number(edge.minutes) * 60, Number(edge.minimumTransferSeconds || 0))
-    : Number(edge.minutes) * 60), 0);
-  const totalWaitSeconds = routeEdges.reduce((sum, edge) => sum + Number(edge.scheduledWaitSeconds || 0), 0);
-  const transitGroups = [];
-  let activeVehicle = null;
-  for (const edge of routeEdges) {
-    if (!TRANSIT_MODES.has(edge.mode)) {
-      activeVehicle = null;
-      continue;
-    }
-    const vehicle = vehicleKey(edge, edge.reverse);
-    if (vehicle !== activeVehicle) transitGroups.push(vehicle);
-    activeVehicle = vehicle;
-  }
-  return {
-    edges: routeEdges,
-    durationSeconds,
-    totalWaitSeconds,
-    scoreSeconds: bestEnd.score,
-    transitMinutes: durationSeconds / 60,
-    transfers: Math.max(0, transitGroups.length - 1),
-    signature: routeEdges.map(edge => `${edge.mode}:${edge.route || edge.id}:${edge.reverse ? "r" : "f"}`).join("|")
-  };
+  return results;
+}
+
+function summarizeTransit(label) {
+  const edges = [];
+  let cursor = label;
+  while (cursor.step) { edges.unshift(cursor.step); cursor = cursor.previous; }
+  const durationSeconds = edges.reduce((total, edge) => total + edge.durationSeconds, 0);
+  return { edges, durationSeconds, totalWaitSeconds: edges.reduce((total, edge) => total + edge.scheduledWaitSeconds, 0),
+    scoreSeconds: label.priority, walkingSeconds: label.walk, transitMinutes: (durationSeconds - label.walk) / 60,
+    transfers: Math.max(0, label.boardings - 1), signature: edges.map(edge => edge.id + "@" + edge.departureTime).join("|") };
+}
+
+function stationPathFor(stop, edge, action) {
+  if (!stop || !Array.isArray(stop.accessiblePaths)) return undefined;
+  const platformStopId = (action === "exit" ? edge?.toPlatformStopId : edge?.fromPlatformStopId) || edge?.platformStopId || stop.platformStopId;
+  return platformStopId ? stop.accessiblePaths.find(path => accessiblePathSupports(path, action, {
+    platformStopId, directionId: edge?.directionId || stop.directionId, requireCompletePath: true
+  })) : undefined;
 }
 
 function buildEndpointCandidates({
@@ -394,10 +386,10 @@ function buildEndpointCandidates({
     }))
     .sort((a, b) => candidateUsefulnessScore(b, edges, isAccess, needs)
       - candidateUsefulnessScore(a, edges, isAccess, needs)
-      || haversineMeters(endpointCoordinates, a.coordinates) - haversineMeters(endpointCoordinates, b.coordinates))
-    .slice(0, search.maxEvaluations);
+      || haversineMeters(endpointCoordinates, a.coordinates) - haversineMeters(endpointCoordinates, b.coordinates));
+  search.limited ||= connected.length > search.maxEvaluations;
   const candidates = [];
-  for (const stop of connected) {
+  for (const stop of connected.slice(0, search.maxEvaluations)) {
     const from = isAccess ? endpointId : stop.pedestrianNodeId;
     const to = isAccess ? stop.pedestrianNodeId : endpointId;
     const walking = getWalkingRoute(from, to, kind, cache, nodes, pedestrianEdges, needs, weather, weights);
@@ -409,6 +401,7 @@ function buildEndpointCandidates({
       usefulness: candidateUsefulnessScore(stop, edges, isAccess, needs)
     });
   }
+  search.limited ||= candidates.length > search.maxCandidates;
   return candidates
     .sort((a, b) => a.networkWalkMinutes + curbUncertaintyPenalty(a.stop, needs)
       - (b.networkWalkMinutes + curbUncertaintyPenalty(b.stop, needs))
@@ -427,93 +420,92 @@ function getWalkingRoute(from, to, type, cache, nodes, edges, needs, weather, we
 }
 
 export function isTransitEdgeActive(edge, departureTime = new Date()) {
+  const date = new Date(departureTime);
+  return Number.isFinite(+date) && serviceAvailable(edge, +date) && runsOnDay(edge, localDateKey(date))
+    && (edge.mode === "transfer" || hasVerifiedSchedule(edge));
+}
+
+function serviceAvailable(edge, timestamp) {
   if (!edge || edge.cancelled === true || edge.tripStatus === "cancelled" || edge.serviceActive === false || edge.skipped === true) return false;
-  const date = departureTime instanceof Date ? departureTime : new Date(departureTime);
-  if (!Number.isFinite(date.getTime())) return false;
-  const serviceDate = localDateKey(date);
-  if (Array.isArray(edge.serviceDates) && edge.serviceDates.length && !edge.serviceDates.includes(serviceDate)) return false;
-  if (edge.serviceStartDate && serviceDate < String(edge.serviceStartDate)) return false;
-  if (edge.serviceEndDate && serviceDate > String(edge.serviceEndDate)) return false;
-  const exception = (edge.calendarExceptions || []).find(item => String(item.date) === serviceDate);
-  if (exception?.type === "removed" || exception?.exceptionType === 2) return false;
-  if (Array.isArray(edge.serviceDays) && edge.serviceDays.length && !exception) {
-    const day = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"][date.getDay()];
-    if (!edge.serviceDays.map(value => String(value).toLowerCase()).includes(day)) return false;
-  }
-  if (Array.isArray(edge.alerts) && edge.alerts.some(alert => {
+  return !(Array.isArray(edge.alerts) && edge.alerts.some(alert => {
     if (alert?.active === false) return false;
+    const start = Date.parse(alert?.startsAt), end = Date.parse(alert?.endsAt);
+    if ((Number.isFinite(start) && timestamp < start) || (Number.isFinite(end) && timestamp >= end)) return false;
     const effect = String(alert?.effect || alert?.code || "").toLowerCase();
     return ["no_service", "stop_closed", "route_suspended", "trip_cancelled", "station_closed", "path_unavailable"].includes(effect);
-  })) return false;
-  if (edge.mode !== "transfer" && !hasVerifiedSchedule(edge)) return false;
-  return true;
+  }));
+}
+
+function runsOnDay(edge, date) {
+  const compact = value => String(value || "").replaceAll("-", "");
+  const key = compact(date);
+  const exception = (edge.calendarExceptions || []).find(item => compact(item.date) === key);
+  if (exception?.type === "removed" || Number(exception?.exceptionType) === 2) return false;
+  if (exception?.type === "added" || Number(exception?.exceptionType) === 1) return true;
+  if (Array.isArray(edge.serviceDates) && edge.serviceDates.length && !edge.serviceDates.some(value => compact(value) === key)) return false;
+  if (edge.serviceStartDate && key < compact(edge.serviceStartDate)) return false;
+  if (edge.serviceEndDate && key > compact(edge.serviceEndDate)) return false;
+  const day = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"][new Date(date + "T12:00:00Z").getUTCDay()];
+  return !Array.isArray(edge.serviceDays) || !edge.serviceDays.length
+    || edge.serviceDays.some(value => String(value).toLowerCase() === day);
 }
 
 function validTransitEdge(edge, stopMap) {
-  if (!edge || !["bus", "subway", "ferry", "transfer"].includes(edge.mode)) return false;
+  if (!edge || (edge.mode !== "transfer" && !TRANSIT_MODES.has(edge.mode))) return false;
   if (!stopMap.has(edge.from) || !stopMap.has(edge.to) || edge.from === edge.to) return false;
   if (!Number.isFinite(Number(edge.minutes)) || Number(edge.minutes) < 0) return false;
-  if (edge.mode !== "transfer" && !edge.route) return false;
-  if (edge.mode !== "transfer" && !hasVerifiedSchedule(edge)) return false;
-  if (edge.mode === "transfer" && (
-    edge.providerConfirmed !== true
-    || edge.geometryVerified !== true
-    || edge.accessiblePathComplete !== true
-    || !Number.isFinite(Number(edge.minimumTransferSeconds))
-  )) return false;
-  if (edge.fromSequence != null && edge.toSequence != null && Number(edge.toSequence) <= Number(edge.fromSequence)) return false;
-  return true;
+  if (edge.mode === "transfer") return edge.providerConfirmed === true && edge.geometryVerified === true
+    && Number.isFinite(Number(edge.minimumTransferSeconds)) && Number(edge.minimumTransferSeconds) >= 0;
+  return Boolean(edge.route && hasVerifiedSchedule(edge)
+    && !(edge.fromSequence != null && edge.toSequence != null && Number(edge.toSequence) <= Number(edge.fromSequence)));
 }
 
 export function hasVerifiedSchedule(edge) {
-  if (edge?.scheduleVerified !== true
-    || edge.scheduleFreshness !== "current"
-    || !edge.scheduleSource
-    || !Number.isFinite(Date.parse(edge.scheduleUpdatedAt))) return false;
-  return Boolean(
-    (Array.isArray(edge.departures) && edge.departures.some(value => Number.isFinite(Date.parse(value))))
-    || validFrequency(edge.frequency)
-    || (Number.isFinite(Number(edge.scheduledWaitSeconds)) && Number(edge.scheduledWaitSeconds) >= 0)
-  );
+  return Boolean(edge?.scheduleVerified === true && edge.scheduleFreshness === "current" && edge.scheduleSource
+    && Number.isFinite(Date.parse(edge.scheduleUpdatedAt))
+    && ((Array.isArray(edge.departures) && edge.departures.some(value => Number.isFinite(Date.parse(value)))) || validFrequency(edge.frequency)));
 }
 
 export function nextBoardingWaitSeconds(edge, arrivalTime = new Date()) {
-  if (!hasVerifiedSchedule(edge)) return null;
-  const arrival = arrivalTime instanceof Date ? arrivalTime : new Date(arrivalTime);
-  if (!Number.isFinite(arrival.getTime())) return null;
-  const departures = (edge.departures || [])
-    .map(value => Date.parse(value))
-    .filter(value => Number.isFinite(value) && value >= arrival.getTime())
-    .sort((a, b) => a - b);
-  if (departures.length) return Math.round((departures[0] - arrival.getTime()) / 1000);
-  if (validFrequency(edge.frequency)) {
-    const start = timeOnServiceDate(arrival, edge.frequency.startTime);
-    let end = timeOnServiceDate(arrival, edge.frequency.endTime);
-    if (end <= start) end += 24 * 60 * 60 * 1000;
-    const arrivalMs = arrival.getTime();
-    if (arrivalMs > end) return null;
-    if (arrivalMs <= start) return Math.round((start - arrivalMs) / 1000);
-    const elapsedSeconds = (arrivalMs - start) / 1000;
-    const headway = Number(edge.frequency.headwaySeconds);
-    return Math.ceil(elapsedSeconds / headway) * headway - Math.round(elapsedSeconds);
+  const arrival = +new Date(arrivalTime);
+  const result = nextBoarding(edge, arrival);
+  return result ? (result.time - arrival) / 1_000 : null;
+}
+
+function nextBoarding(edge, earliest, continuingDay = null) {
+  if (!hasVerifiedSchedule(edge) || !Number.isFinite(earliest)) return null;
+  const candidates = [];
+  for (const value of (edge.departures || [])) {
+    const time = Date.parse(value);
+    if (!Number.isFinite(time) || time < earliest || time - earliest > 6 * 3_600_000) continue;
+    const day = edge.serviceDate?.replace(/^(\d{4})(\d{2})(\d{2})$/, "$1-$2-$3") || localDateKey(new Date(time));
+    if ((!continuingDay || day.replaceAll("-", "") === continuingDay) && runsOnDay(edge, day) && serviceAvailable(edge, time)) candidates.push({ time, day });
   }
-  const wait = Number(edge.scheduledWaitSeconds);
-  return Number.isFinite(wait) && wait >= 0 ? wait : null;
+  if (validFrequency(edge.frequency)) {
+    const today = localDateKey(new Date(earliest));
+    for (const day of [shiftDateKey(today, -1), today, shiftDateKey(today, 1)]) {
+      if ((continuingDay && day.replaceAll("-", "") !== continuingDay) || !runsOnDay(edge, day)) continue;
+      const from = clockSeconds(edge.frequency.startTime);
+      let through = clockSeconds(edge.frequency.endTime);
+      if (through <= from) through += 86_400;
+      const start = serviceInstant(day, from), end = serviceInstant(day, through);
+      const headway = edge.frequency.headwaySeconds * 1_000;
+      const time = start + Math.max(0, Math.ceil((earliest - start) / headway)) * headway;
+      if (time < end && time - earliest <= 6 * 3_600_000 && serviceAvailable(edge, time)) candidates.push({ time, day });
+    }
+  }
+  return candidates.sort((a, b) => a.time - b.time)[0] || null;
+}
+
+function clockSeconds(value) {
+  if (!/^\d{2,3}:[0-5]\d(?::[0-5]\d)?$/.test(String(value))) return NaN;
+  const [hours, minutes, seconds = 0] = value.split(":").map(Number);
+  return hours * 3_600 + minutes * 60 + seconds;
 }
 
 function validFrequency(value) {
-  return value
-    && /^\d{2}:\d{2}(?::\d{2})?$/.test(String(value.startTime || ""))
-    && /^\d{2}:\d{2}(?::\d{2})?$/.test(String(value.endTime || ""))
-    && Number.isFinite(Number(value.headwaySeconds))
-    && Number(value.headwaySeconds) > 0;
-}
-
-function timeOnServiceDate(date, value) {
-  const [hours, minutes, seconds = 0] = String(value).split(":").map(Number);
-  const result = new Date(date);
-  result.setHours(hours, minutes, seconds, 0);
-  return result.getTime();
+  return value && Number.isFinite(clockSeconds(value.startTime)) && Number.isFinite(clockSeconds(value.endTime))
+    && Number.isFinite(Number(value.headwaySeconds)) && Number(value.headwaySeconds) > 0;
 }
 
 function supportsRequestedEndpointMode(stop, mode) {
@@ -529,17 +521,13 @@ function isEndpointStopUsable(stop, needs, requestedMode, predicate) {
 }
 
 function edgeAllowed(edge, mode) {
-  if (mode === "mixed") return ["bus", "subway", "ferry", "transfer"].includes(edge.mode);
+  if (mode === "mixed") return TRANSIT_MODES.has(edge.mode) || edge.mode === "transfer";
   return edge.mode === mode || edge.mode === "transfer";
 }
 
-function stateKey(stopId, activeVehicle, usedMask, hasBoarded) {
-  return `${stopId}|${activeVehicle || "none"}|${usedMask}|${hasBoarded ? "boarded" : "new"}`;
-}
-
-function vehicleKey(edge, reverse = false) {
-  const direction = edge.tripId || edge.directionId || edge.direction || (reverse ? "reverse" : "forward");
-  return `${edge.mode}:${edge.route}:${direction}`;
+function vehicleKey(edge, reverse) {
+  const direction = reverse ? "reverse" : edge.directionId || edge.direction || "forward";
+  return edge.mode + ":" + (edge.tripId || edge.id) + ":" + direction;
 }
 
 function ferryWarnings(edges) {
@@ -550,31 +538,6 @@ function ferryWarnings(edges) {
   if (edges.some(edge => edge.reservationRecommended)) warnings.push("Advance reservations are recommended.");
   if (edges.some(edge => edge.mode === "ferry" && !edge.scheduleSource)) warnings.push("Check the current ferry schedule and ticket availability.");
   return warnings;
-}
-
-function localDateKey(date) {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
-}
-
-function modeSatisfied(mask, mode) {
-  return mode !== "mixed" || countBits(mask) >= 2;
-}
-
-function modeMask(mode) {
-  return mode === "bus" ? 1 : mode === "subway" ? 2 : mode === "ferry" ? 4 : 0;
-}
-
-function countBits(mask) {
-  let value = mask;
-  let count = 0;
-  while (value) {
-    count += value & 1;
-    value >>>= 1;
-  }
-  return count;
 }
 
 function validCoordinates(value) {

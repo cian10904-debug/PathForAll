@@ -4,7 +4,7 @@ import { routeGeometrySegments } from "./route-model.js";
 
 /** Build MapLibre sources from normalized, verified LineString legs only. */
 export function routeLayerData(route) {
-  const grouped = { walk: [], bus: [], subway: [], ferry: [] };
+  const grouped = { walk: [], bus: [], subway: [], ferry: [], rail: [] };
   for (const segment of routeGeometrySegments(route)) {
     const mode = segment.mode === "transfer" ? "walk" : segment.mode;
     if (!grouped[mode] || !isValidLine(segment.coordinates)) continue;

@@ -1,7 +1,8 @@
 "use strict";
 
-const ROUTE_MODES = Object.freeze(["walk", "bus", "subway", "ferry", "mixed"]);
-const TRANSIT_MODES = Object.freeze(["bus", "subway", "ferry", "mixed"]);
+import { ROUTE_MODES as MODES, searchMode, VEHICLE_MODES } from "./transit-modes.js";
+const ROUTE_MODES = [...MODES];
+const TRANSIT_MODES = [...VEHICLE_MODES, "mixed"];
 const STATUS_SET = new Set(["Connected", "Not configured", "Unavailable", "Stale", "Unknown"]);
 const SENSITIVE_QUERY_KEY = /(?:api[-_]?key|token|secret|password|passwd|authorization|auth[-_]?key|signature)/i;
 
@@ -13,7 +14,11 @@ export const TRANSIT_CONNECTION_STATUSES = Object.freeze([
   "Unknown"
 ]);
 
-export const transitEnvironment = validateTransitEnvironment(import.meta.env || {});
+export const transitEnvironment = validateTransitEnvironment(import.meta.env?.PROD ? {
+  ...import.meta.env,
+  VITE_ACCESSIBLE_ROUTING_URL: import.meta.env.VITE_ACCESSIBLE_ROUTING_URL ?? "/api/routes",
+  VITE_ACCESSIBLE_ROUTING_CAPABILITIES_URL: import.meta.env.VITE_ACCESSIBLE_ROUTING_CAPABILITIES_URL ?? "/api/capabilities"
+} : import.meta.env || {});
 
 export function validateTransitEnvironment(env = {}) {
   const issues = [];
@@ -32,7 +37,7 @@ export function validateTransitEnvironment(env = {}) {
     .split(",")
     .map(mode => mode.trim().toLowerCase())
     .filter(Boolean);
-  const unsupportedModes = [...new Set(rawModes.filter(mode => !ROUTE_MODES.includes(mode)))];
+  const unsupportedModes = [...new Set(rawModes.filter(mode => !searchMode(mode)))];
   if (unsupportedModes.length) {
     issues.push({
       variable: "VITE_ACCESSIBLE_ROUTING_MODES",
@@ -40,7 +45,7 @@ export function validateTransitEnvironment(env = {}) {
       message: `Unsupported routing mode${unsupportedModes.length === 1 ? "" : "s"}: ${unsupportedModes.join(", ")}.`
     });
   }
-  const modes = [...new Set(rawModes.filter(mode => ROUTE_MODES.includes(mode)))];
+  const modes = [...new Set(rawModes.map(searchMode).filter(Boolean))];
   if (!modes.length) modes.push("walk");
 
   if (endpoints.capabilities.configured && !endpoints.routeProvider.valid) {
@@ -72,14 +77,16 @@ export function validateTransitEnvironment(env = {}) {
 
 export function buildTransitConnectionReport({
   environment = transitEnvironment,
-  routeCapabilities = {},
+  routeCapabilities = /** @type {{scheduledTransit?: boolean, realtimeArrivals?: boolean, source?: string, checked?: boolean, elevatorAccessibilityPaths?: boolean, ferrySchedules?: boolean, available?: boolean, supportedModes?: string[], modes?: string[]}} */ ({}),
   routeProviderState = null,
   transitNetworkState = null,
   realtimeState = null,
   checkedAt = new Date().toISOString()
 } = {}) {
   const routeProvider = routeProviderConnection(environment, routeCapabilities, routeProviderState);
-  const transitNetwork = configuredConnection(
+  const transitNetwork = routeCapabilities.scheduledTransit === true && !environment.endpoints.transitNetwork.configured
+    ? connection(routeProvider.status, "Schedules via itinerary service; no standalone topology feed", routeProvider.updatedAt)
+    : configuredConnection(
     environment.endpoints.transitNetwork,
     transitNetworkState,
     "Transit network provider"
@@ -157,14 +164,14 @@ export function buildTransitConnectionReport({
 export function transitModeAvailability(
   _report,
   environment = transitEnvironment,
-  routeCapabilities = {},
+  routeCapabilities = /** @type {{realtimeArrivals?: boolean, source?: string, checked?: boolean, elevatorAccessibilityPaths?: boolean, ferrySchedules?: boolean, available?: boolean, supportedModes?: string[], modes?: string[]}} */ ({}),
   transitNetworkState = null
 ) {
-  const availability = { walk: true, bus: false, subway: false, ferry: false, mixed: false };
+  const availability = { walk: true, bus: false, subway: false, ferry: false, rail: false, mixed: false };
   if (environment.endpoints.routeProvider.valid) {
     const providerModes = routeCapabilities.available
       ? routeCapabilities.supportedModes || routeCapabilities.modes || []
-      : environment.modes;
+      : routeCapabilities.checked ? [] : environment.endpoints.capabilities.valid ? [] : environment.modes;
     providerModes.forEach(mode => {
       if (TRANSIT_MODES.includes(mode)) availability[mode] = true;
     });
@@ -178,6 +185,7 @@ export function transitModeAvailability(
       if (TRANSIT_MODES.includes(mode)) availability[mode] = true;
     });
   }
+  availability.mixed ||= [...VEHICLE_MODES].some(mode => availability[mode]);
   return availability;
 }
 
@@ -219,6 +227,7 @@ function validateEndpoint(rawValue, variable, issues) {
   const raw = String(rawValue || "").trim();
   const result = { variable, configured: Boolean(raw), valid: false, url: "" };
   if (!raw) return result;
+  if (/^\/api\/[a-z][a-z0-9/-]*$/.test(raw)) return { ...result, valid: true, url: raw };
   try {
     const parsed = new URL(raw);
     const localHttp =

@@ -150,7 +150,7 @@ const busFerry = planTransitRoutes({
 assert.ok(busFerry.length > 0, "Bus plus Ferry is a valid Mixed itinerary");
 assert.equal(busFerry[0].transfers, 1);
 
-assert.deepEqual(planTransitRoutes({
+assert.ok(planTransitRoutes({
   pedestrianNodes: fallbackNodes,
   pedestrianEdges: fallbackEdges,
   startId: "cooper",
@@ -160,10 +160,10 @@ assert.deepEqual(planTransitRoutes({
   mode: "mixed",
   transitStops: stops,
   transitEdges: directedBus
-}), [], "a bus-only path is not mislabeled as Mixed");
+}).some(route => route.transit.edges.every(leg => leg.mode === "bus")), "All Transit may return a bus-only path");
 
 const subwayOnlyEdges = directedBus.map(item => ({ ...item, id: `subway-${item.id}`, mode: "subway", route: "F" }));
-assert.deepEqual(planTransitRoutes({
+assert.ok(planTransitRoutes({
   pedestrianNodes: fallbackNodes,
   pedestrianEdges: fallbackEdges,
   startId: "cooper",
@@ -173,7 +173,7 @@ assert.deepEqual(planTransitRoutes({
   mode: "mixed",
   transitStops: stops,
   transitEdges: subwayOnlyEdges
-}), [], "a subway-only path is not mislabeled as Mixed");
+}).length === 0, "bus stops cannot be treated as subway entrances");
 
 const routeStateEdges = [
   edge("in-a", "entry", "middle", "bus", "A", 1, 2),
@@ -259,7 +259,7 @@ function stop(id, name, nodeId, modes, wheelchairAccessible) {
       wheelchairAccessible: true,
       status: "working",
       freshness: "current",
-      updatedAt: "2099-01-01T12:00:00.000Z"
+      updatedAt: new Date().toISOString()
     }] : []
   };
 }
@@ -271,6 +271,7 @@ function edge(id, from, to, mode, route, fromSequence, toSequence) {
     to,
     mode,
     route,
+    tripId: route + "-trip",
     minutes: 4,
     wheelchairAccessible: true,
     bidirectional: false,
@@ -283,7 +284,7 @@ function edge(id, from, to, mode, route, fromSequence, toSequence) {
     scheduleSource: "Test schedule",
     scheduleUpdatedAt: "2099-01-01T12:00:00.000Z",
     scheduleFreshness: "current",
-    frequency: { startTime: "00:00:00", endTime: "23:59:59", headwaySeconds: 300 },
+    frequency: { startTime: "00:00:00", endTime: "23:59:59", headwaySeconds: 60 },
     geometryVerified: false
   };
 }
@@ -301,6 +302,7 @@ function transfer(id, from, to, fromCoordinates, toCoordinates) {
     providerConfirmed: true,
     geometryVerified: true,
     accessiblePathComplete: true,
+    accessibility: { pedestrianEvidence: "provider-verified", stairs: false, slope: 0, requiresCurbRamp: false },
     minimumTransferSeconds: 120,
     geometry: [fromCoordinates, toCoordinates]
   };

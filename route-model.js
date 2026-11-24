@@ -1,26 +1,29 @@
 "use strict";
 
+import { assessEdge, evidence, reverseEdge, summarizeEvidence } from "./accessibility.js";
+
 import { haversineMeters } from "./osm-network.js";
+import { actualVehicleModes, continuesRide, LEG_MODES, matchesSearchMode, ROUTE_MODES, searchMode, VEHICLE_MODES } from "./transit-modes.js";
+import { instant, inspectTimeline } from "./route-timeline.js";
 
 /**
- * @typedef {"walk"|"bus"|"subway"|"ferry"|"mixed"} RouteMode
- * @typedef {"walk"|"bus"|"subway"|"ferry"|"transfer"} LegMode
+ * @typedef {"walk"|"bus"|"subway"|"ferry"|"rail"|"mixed"} RouteMode
+ * @typedef {"walk"|"bus"|"subway"|"ferry"|"rail"|"transfer"} LegMode
  * @typedef {{ id?: string, name?: string, coordinates: [number, number] }} RoutePlace
  * @typedef {{ type: "LineString", coordinates: [number, number][] } | null} RouteGeometry
  * @typedef {{ id: string, mode: LegMode, from: RoutePlace, to: RoutePlace, routeId?: string, routeName?: string, headsign?: string, durationSeconds: number, distanceMeters: number, waitSeconds?: number, departureTime?: string, arrivalTime?: string, geometry: RouteGeometry, accessibility: object }} RouteLeg
  * @typedef {{ id: string, mode: RouteMode, label: string, legs: RouteLeg[], totalDurationSeconds: number, totalWalkingMeters: number, totalWaitSeconds: number, transfers: number, distanceMeters: number, accessibility: object, trust: object, warnings: string[], dataSource: string }} RouteOption
  */
 
-export const VALID_ROUTE_MODES = new Set(["walk", "bus", "subway", "ferry", "mixed"]);
-export const VALID_LEG_MODES = new Set(["walk", "bus", "subway", "ferry", "transfer"]);
-const VEHICLE_MODES = new Set(["bus", "subway", "ferry"]);
+export const VALID_ROUTE_MODES = ROUTE_MODES;
+export const VALID_LEG_MODES = LEG_MODES;
 const MAX_ENDPOINT_DISTANCE_METERS = 25;
 const MAX_CONNECTION_DISTANCE_METERS = 25;
 
 export function coordinate(value) {
   if (!Array.isArray(value) || value.length < 2) return null;
-  const longitude = Number(value[0]);
-  const latitude = Number(value[1]);
+  const longitude = value[0];
+  const latitude = value[1];
   if (!Number.isFinite(longitude) || !Number.isFinite(latitude)) return null;
   if (longitude < -180 || longitude > 180 || latitude < -90 || latitude > 90) return null;
   return [longitude, latitude];
@@ -60,7 +63,7 @@ export function routeGeometrySegments(route) {
  */
 export function isRenderableLegGeometry(leg) {
   if (!lineGeometry(leg?.geometry)) return false;
-  if (["bus", "subway", "ferry", "transfer"].includes(leg?.mode)
+  if ((VEHICLE_MODES.has(leg?.mode) || leg?.mode === "transfer")
     && (leg?.geometryVerified === false || leg?.accessibility?.geometryVerified === false)) return false;
   return true;
 }
@@ -74,17 +77,10 @@ export function calculateRouteTotals(legs) {
   const totalWaitSeconds = safeLegs.reduce((sum, leg) => sum + nonNegative(leg.waitSeconds), 0);
   const distanceMeters = safeLegs.reduce((sum, leg) => sum + nonNegative(leg.distanceMeters), 0);
   let boardings = 0;
-  let activeVehicle = null;
+  let previous = null;
   for (const leg of safeLegs) {
-    if (!VEHICLE_MODES.has(leg.mode)) {
-      // A walking or transfer leg ends the current vehicle ride, even if the
-      // following boarding uses the same line again.
-      activeVehicle = null;
-      continue;
-    }
-    const vehicle = `${leg.mode}:${leg.routeId || leg.routeName || leg.id}`;
-    if (vehicle !== activeVehicle) boardings += 1;
-    activeVehicle = vehicle;
+    if (VEHICLE_MODES.has(leg.mode) && !continuesRide(previous, leg)) boardings += 1;
+    previous = leg;
   }
   return { totalDurationSeconds, totalWalkingMeters, totalWaitSeconds, distanceMeters, transfers: Math.max(0, boardings - 1) };
 }
@@ -92,13 +88,21 @@ export function calculateRouteTotals(legs) {
 export function normalizeRouteOption(input = {}, validation = {}) {
   const rawLegs = Array.isArray(input.legs) ? input.legs : [];
   const legs = rawLegs.map((leg, index) => normalizeLeg(leg, index)).filter(Boolean);
-  if (rawLegs.length !== legs.length) return null;
+  if (rawLegs.length !== legs.length) {
+    validation.onInvalid?.(["Route contains an invalid leg."], ["PROVIDER_CONTRACT_ERROR"]);
+    return null;
+  }
   const inferredMode = inferRouteMode(legs);
   const totals = calculateRouteTotals(legs);
   const endpointConnections = normalizeEndpointConnections(input.endpointConnections);
   const route = {
     id: String(input.id || input.key || `route-${Math.random().toString(36).slice(2, 9)}`),
     mode: inferredMode,
+    requestedMode: searchMode(validation.requestedMode || input.requestedMode || input.mode) || inferredMode,
+    actualModes: actualVehicleModes(legs),
+    requestedDepartureTime: validTimestamp(validation.departureTime || input.requestedDepartureTime),
+    timelineRequired: validation.requireTimeline === true || input.timelineRequired === true,
+    arrivalTime: legs.at(-1)?.arrivalTime || null,
     label: String(input.label || input.optionLabel || defaultLabel(inferredMode)),
     legs,
     // Totals are deliberately derived from legs. This prevents a provider or
@@ -116,6 +120,11 @@ export function normalizeRouteOption(input = {}, validation = {}) {
     ])],
     dataSource: safeDataSource(input.dataSource),
     endpointConnections,
+    evidence: routeEvidence(legs, validation.needs || input.needs || {}, validation.now),
+    generalizedCostMinutes: Number.isFinite(input.generalizedCostMinutes) ? input.generalizedCostMinutes : null,
+    provenance: input.provenance || null,
+    retrievedAt: validTimestamp(input.retrievedAt) || null,
+    observedAt: validTimestamp(input.observedAt) || null,
     dataVersion: input.dataVersion == null ? null : String(input.dataVersion),
     serviceAlertVersion: input.serviceAlertVersion == null ? null : String(input.serviceAlertVersion),
     elevatorStatusVersion: input.elevatorStatusVersion == null ? null : String(input.elevatorStatusVersion),
@@ -124,25 +133,32 @@ export function normalizeRouteOption(input = {}, validation = {}) {
     updatedAt: validTimestamp(input.updatedAt || input.providerUpdatedAt) || null,
     expiresAt: validTimestamp(input.expiresAt) || null
   };
+  if (route.evidence.status === "unknown") route.warnings.push(`Selected requirements are not fully confirmed. Walking gaps: ${Math.round(route.evidence.unknownDistanceMeters)} m; boarding gaps: ${route.evidence.unknownEvents}. Inspect the evidence before travel.`);
   const result = validateRouteOption(route, { ...validation, requestedMode: validation.requestedMode || input.requestedMode });
-  return result.valid ? route : null;
+  if (!result.valid) {
+    validation.onInvalid?.(result.reasons, result.codes);
+    return null;
+  }
+  return route;
 }
 
 export function validateRouteOption(route, options = {}) {
   const reasons = [];
+  const codes = new Set();
+  const now = Number.isFinite(options.now) ? options.now : Date.now();
   const legs = route?.legs || [];
   const requestedStart = place(options.start);
   const requestedEnd = place(options.end);
   const connectionLimit = Number(options.maxConnectionMeters || MAX_CONNECTION_DISTANCE_METERS);
   const endpointLimit = Number(options.maxEndpointMeters || MAX_ENDPOINT_DISTANCE_METERS);
-  const requestedMode = String(options.requestedMode || "").toLowerCase();
+  const requestedMode = searchMode(options.requestedMode || route?.requestedMode);
   const needs = options.needs || {};
 
   if (!VALID_ROUTE_MODES.has(route?.mode)) reasons.push("unknown route mode");
   if (!legs.length) reasons.push("route has no valid legs");
   const ids = new Set();
   const logicalLegs = new Set();
-  for (const leg of legs) {
+  for (const [legIndex, leg] of legs.entries()) {
     if (!VALID_LEG_MODES.has(leg.mode)) reasons.push(`invalid leg mode: ${leg.mode}`);
     if (ids.has(leg.id)) reasons.push("route contains a duplicated leg");
     ids.add(leg.id);
@@ -167,6 +183,21 @@ export function validateRouteOption(route, options = {}) {
       && (Number(leg.distanceMeters) > 1 || (from && to && haversineMeters(from.coordinates, to.coordinates) > 1))
       && !isRenderableLegGeometry(leg)) {
       reasons.push(`leg ${leg.id} has no verified pedestrian geometry`);
+      codes.add("ENDPOINT_CONNECTOR_UNAVAILABLE");
+    }
+    if (["walk", "transfer"].includes(leg.mode)) {
+      const assessment = assessEdge(legToEdge(leg), needs, { now });
+      if (!assessment.eligible) {
+        reasons.push(`leg ${leg.id}: ${[...assessment.violations, ...assessment.unknowns].map(([, value]) => value.reason).join(" ")}`);
+        codes.add(assessment.violations.length ? "ACCESSIBILITY_CONSTRAINT_BLOCKED" : "INSUFFICIENT_ACCESSIBILITY_EVIDENCE");
+      }
+    }
+    for (const [name, value] of Object.entries(vehicleRequirements(legs, legIndex, needs, now))) {
+      if (value.state === "violated" || (value.state === "unknown"
+        && (needs.unknownPolicy !== "allow" || (needs.requireVerifiedCurbAccess && ["boardingCurb", "exitCurb"].includes(name))))) {
+        reasons.push(`leg ${leg.id}: ${name}: ${value.reason}`);
+        codes.add(value.state === "violated" ? "ACCESSIBILITY_CONSTRAINT_BLOCKED" : "INSUFFICIENT_ACCESSIBILITY_EVIDENCE");
+      }
     }
     if (leg.departureTime && leg.arrivalTime && Date.parse(leg.arrivalTime) < Date.parse(leg.departureTime)) reasons.push(`leg ${leg.id} arrives before it departs`);
   }
@@ -180,13 +211,21 @@ export function validateRouteOption(route, options = {}) {
   if (validatedStart && legs[0] && haversineMeters(validatedStart, legs[0].from.coordinates) > endpointLimit) reasons.push("first leg is too far from the selected start access point");
   if (validatedEnd && legs.at(-1) && haversineMeters(validatedEnd, legs.at(-1).to.coordinates) > endpointLimit) reasons.push("last leg is too far from the selected destination access point");
   const transit = transitLegs(route);
-  if (["bus", "subway", "ferry", "mixed"].includes(route?.mode) && !transit.length) reasons.push("transit route has no transit legs");
-  if (route?.mode === "bus" && transit.some(leg => leg.mode !== "bus")) reasons.push("bus route contains a non-bus transit leg");
-  if (route?.mode === "subway" && transit.some(leg => leg.mode !== "subway")) reasons.push("subway route contains a non-subway transit leg");
-  if (route?.mode === "ferry" && transit.some(leg => leg.mode !== "ferry")) reasons.push("ferry route contains a non-ferry transit leg");
-  if (route?.mode === "mixed" && new Set(transit.map(leg => leg.mode)).size < 2) reasons.push("mixed route must contain at least two vehicle modes");
-  if (requestedMode && VALID_ROUTE_MODES.has(requestedMode) && requestedMode !== route?.mode) {
-    reasons.push(`provider route mode ${route?.mode} does not match requested mode ${requestedMode}`);
+  const modes = actualVehicleModes(legs);
+  if (route?.mode !== inferRouteMode(legs) || !matchesSearchMode(requestedMode, modes))
+    reasons.push("Route modes do not match the selected transit search.");
+  if (transit.length && Number.isFinite(needs.maxWalkMinutes)
+    && legs.filter(leg => ["walk", "transfer"].includes(leg.mode)).reduce((sum, leg) => sum + leg.durationSeconds, 0) > needs.maxWalkMinutes * 60 + 1) {
+    reasons.push("Combined access, transfer, and exit walking exceeds the walking limit.");
+    codes.add("NO_FEASIBLE_ROUTE");
+  }
+  // Older saved routes may lack a full timestamp set. Operational provider
+  // responses always request strict timeline validation.
+  const requiresTimeline = transit.length > 0 && (route?.timelineRequired || options.requireTimeline || legs.some(leg => leg.departureTime && leg.arrivalTime));
+  if (requiresTimeline) {
+    const timeline = inspectTimeline(legs, { required: true, departedAt: options.departureTime || route.requestedDepartureTime });
+    reasons.push(...timeline.issues);
+    if (timeline.issues.length) codes.add("PROVIDER_CONTRACT_ERROR");
   }
   for (const leg of transit.filter(item => item.mode === "ferry")) {
     if (leg.scheduleStatus !== "verified" || leg.scheduleFreshness !== "current" || !leg.scheduleSource || !leg.departureTime) {
@@ -196,38 +235,31 @@ export function validateRouteOption(route, options = {}) {
   if (transit.length && route?.dataFreshness !== "current") reasons.push("transit route data is not current");
   if (transit.length && !Number.isFinite(Date.parse(route?.updatedAt))) reasons.push("transit route has no valid source timestamp");
   if (transit.length && !Number.isFinite(Date.parse(route?.expiresAt))) reasons.push("transit route has no expiration timestamp");
-  if (needs.requireElevator || needs.wheelchairMode || needs.avoidStairs) {
-    for (const leg of transit.filter(item => item.mode === "subway")) {
-      const paths = [leg.accessibility?.boardingPath, leg.accessibility?.exitPath].filter(Boolean);
-      if (paths.length !== 2 || paths.some(path => !completeCurrentAccessiblePath(path))) {
-        reasons.push(`subway leg ${leg.id} lacks complete current boarding and exit paths`);
-      }
-    }
-  }
   if (route?.dataFreshness === "stale") reasons.push("route data is stale");
-  if (route?.expiresAt && Date.parse(route.expiresAt) <= Date.now()) reasons.push("route data has expired");
+  if (route?.expiresAt && Date.parse(route.expiresAt) <= now) reasons.push("route data has expired");
   const totals = calculateRouteTotals(legs);
   if (!Number.isFinite(Number(route?.totalDurationSeconds)) || Math.abs(Number(route.totalDurationSeconds) - totals.totalDurationSeconds) > .5) reasons.push("route duration does not match its legs");
   if (!Number.isFinite(Number(route?.totalWaitSeconds)) || Math.abs(Number(route.totalWaitSeconds) - totals.totalWaitSeconds) > .5) reasons.push("route wait time does not match its legs");
   if (Number(route?.totalDurationSeconds) < 0) reasons.push("route duration is negative");
-  return { valid: reasons.length === 0, reasons };
+  return { valid: reasons.length === 0, reasons, codes: reasons.length ? [...(codes.size ? codes : ["PROVIDER_CONTRACT_ERROR"])] : [] };
 }
 
 export function normalizeWalkingRoute(item, context = {}) {
   const edgeMap = new Map((context.edges || []).map(edge => [edge.id, edge]));
   const nodes = context.nodes || {};
   const legs = (item?.route?.traversals || []).map((traversal, index) => {
-    const edge = edgeMap.get(traversal.edgeId);
+    const storedEdge = edgeMap.get(traversal.edgeId);
+    const edge = storedEdge && traversal.reverse ? reverseEdge(storedEdge) : storedEdge;
     if (!edge) return null;
-    const rawGeometry = Array.isArray(edge.geometry) && edge.geometry.length >= 2 ? (traversal.reverse ? [...edge.geometry].reverse() : edge.geometry) : null;
-    const fromCoordinates = rawGeometry?.[0] || nodes[traversal.reverse ? edge.to : edge.from]?.coordinates;
-    const toCoordinates = rawGeometry?.at(-1) || nodes[traversal.reverse ? edge.from : edge.to]?.coordinates;
+    const rawGeometry = Array.isArray(edge.geometry) && edge.geometry.length >= 2 ? edge.geometry : null;
+    const fromCoordinates = rawGeometry?.[0] || nodes[edge.from]?.coordinates;
+    const toCoordinates = rawGeometry?.at(-1) || nodes[edge.to]?.coordinates;
     return {
       id: `walk-${index}-${edge.id}`,
       mode: "walk",
-      from: { id: traversal.reverse ? edge.to : edge.from, name: edge.name || "Walking segment", coordinates: fromCoordinates },
-      to: { id: traversal.reverse ? edge.from : edge.to, name: edge.name || "Walking segment", coordinates: toCoordinates },
-      durationSeconds: Math.round(nonNegative(edge.minutes) * 60),
+      from: { id: edge.from, name: edge.name || "Walking segment", coordinates: fromCoordinates },
+      to: { id: edge.to, name: edge.name || "Walking segment", coordinates: toCoordinates },
+      durationSeconds: nonNegative(edge.minutes) * 60,
       distanceMeters: nonNegative(edge.distanceMeters),
       geometry: lineGeometry(rawGeometry),
       accessibility: edgeAccessibility(edge),
@@ -238,15 +270,19 @@ export function normalizeWalkingRoute(item, context = {}) {
   }).filter(Boolean);
   return normalizeRouteOption({
     id: item?.key,
+    generalizedCostMinutes: item?.route?.score,
+    needs: context.needs,
+    retrievedAt: context.retrievedAt,
+    provenance: context.provenance,
     mode: "walk",
-    label: item?.label || "Accessible walking route",
+    label: item?.label || "Walking option",
     legs,
     accessibility: item?.metrics || {},
     trust: context.trust || {},
     warnings: item?.reasons || [],
     dataSource: context.dataSource || "OpenStreetMap via Overpass API",
     endpointConnections: context.endpointConnections
-  }, { start: context.start, end: context.end });
+  }, { start: context.start, end: context.end, needs: context.needs });
 }
 
 export function normalizeLocalTransitRoute(itinerary, context = {}) {
@@ -254,15 +290,16 @@ export function normalizeLocalTransitRoute(itinerary, context = {}) {
   const nodes = context.pedestrianNodes || {};
   const stopMap = new Map((context.transitStops || []).map(stop => [stop.id, stop]));
   const walkingLegs = (route, prefix) => (route?.traversals || []).map((traversal, index) => {
-    const edge = edgeMap.get(traversal.edgeId);
+    const storedEdge = edgeMap.get(traversal.edgeId);
+    const edge = storedEdge && traversal.reverse ? reverseEdge(storedEdge) : storedEdge;
     if (!edge) return null;
-    const rawGeometry = Array.isArray(edge.geometry) && edge.geometry.length >= 2 ? (traversal.reverse ? [...edge.geometry].reverse() : edge.geometry) : null;
+    const rawGeometry = Array.isArray(edge.geometry) && edge.geometry.length >= 2 ? edge.geometry : null;
     return {
       id: `${prefix}-walk-${index}-${edge.id}`,
       mode: "walk",
-      from: { id: traversal.reverse ? edge.to : edge.from, name: edge.name || "Walking segment", coordinates: rawGeometry?.[0] || nodes[traversal.reverse ? edge.to : edge.from]?.coordinates },
-      to: { id: traversal.reverse ? edge.from : edge.to, name: edge.name || "Walking segment", coordinates: rawGeometry?.at(-1) || nodes[traversal.reverse ? edge.from : edge.to]?.coordinates },
-      durationSeconds: Math.round(nonNegative(edge.minutes) * 60),
+      from: { id: edge.from, name: edge.name || "Walking segment", coordinates: rawGeometry?.[0] || nodes[edge.from]?.coordinates },
+      to: { id: edge.to, name: edge.name || "Walking segment", coordinates: rawGeometry?.at(-1) || nodes[edge.to]?.coordinates },
+      durationSeconds: nonNegative(edge.minutes) * 60,
       distanceMeters: nonNegative(edge.distanceMeters),
       geometry: lineGeometry(rawGeometry),
       accessibility: edgeAccessibility(edge),
@@ -293,8 +330,13 @@ export function normalizeLocalTransitRoute(itinerary, context = {}) {
       geometry: rawGeometry,
       accessibility: {
         ...(edge.accessibility && typeof edge.accessibility === "object" ? edge.accessibility : {}),
-        wheelchairAccessible: edge.wheelchairAccessible !== false,
+        wheelchairAccessible: edge.wheelchairAccessible === true ? true : edge.wheelchairAccessible === false ? false : "unknown",
+        ...edge.accessibility,
+        boardingPath: edge.boardingPath, exitPath: edge.exitPath,
+        boardingCurb: stopMap.get(fromId)?.curbAccess,
+        exitCurb: stopMap.get(toId)?.curbAccess,
         elevatorStatus: edge.elevatorStatus || edge.accessibility?.elevatorStatus || null,
+        crossingsUnknown: edge.mode === "transfer" && edge.accessiblePathComplete !== true,
         geometryVerified: Boolean(edge.geometryVerified)
       },
       stopCount: Number.isFinite(Number(edge.stopCount)) ? Number(edge.stopCount) : 1,
@@ -324,6 +366,8 @@ export function normalizeLocalTransitRoute(itinerary, context = {}) {
   const route = normalizeRouteOption({
     id: itinerary?.key,
     mode: context.mode,
+    requestedDepartureTime: itinerary?.departureTime || context.departureTime,
+    timelineRequired: Boolean(itinerary?.departureTime),
     label: itinerary?.optionLabel || itinerary?.label,
     legs,
     accessibility: itinerary?.accessibility || {},
@@ -341,7 +385,7 @@ export function normalizeLocalTransitRoute(itinerary, context = {}) {
     dataFreshness: context.dataFreshness,
     updatedAt: context.updatedAt || context.providerUpdatedAt,
     expiresAt: context.expiresAt
-  }, { start: context.start, end: context.end });
+  }, { start: context.start, end: context.end, needs: context.needs });
   return route;
 }
 
@@ -371,6 +415,14 @@ function normalizeLeg(input, index) {
     routeName: input.routeName == null ? undefined : String(input.routeName),
     tripId: input.tripId == null ? undefined : String(input.tripId),
     directionId: input.directionId == null ? undefined : String(input.directionId),
+    serviceDate: /^\d{8}$/.test(input.serviceDate || "") ? input.serviceDate : undefined,
+    fromSequence: Number.isSafeInteger(input.fromSequence) ? input.fromSequence : undefined,
+    toSequence: Number.isSafeInteger(input.toSequence) ? input.toSequence : undefined,
+    staySeated: input.staySeated === true,
+    minimumBoardingSeconds: nonNegative(input.minimumBoardingSeconds),
+    minimumTransferSeconds: nonNegative(input.minimumTransferSeconds),
+    scheduledDepartureTime: validTimestamp(input.scheduledDepartureTime),
+    scheduledArrivalTime: validTimestamp(input.scheduledArrivalTime),
     headsign: input.headsign == null ? undefined : String(input.headsign),
     durationSeconds,
     distanceMeters,
@@ -403,19 +455,24 @@ function normalizeLeg(input, index) {
 }
 
 function inferRouteMode(legs) {
-  const modes = new Set(transitLegs({ legs }).map(leg => leg.mode));
-  if (modes.size >= 2) return "mixed";
-  if (modes.has("bus")) return "bus";
-  if (modes.has("subway")) return "subway";
-  if (modes.has("ferry")) return "ferry";
-  return "walk";
+  const modes = actualVehicleModes(legs);
+  return modes.length > 1 ? "mixed" : modes[0] || "walk";
 }
 
 function edgeAccessibility(edge) {
   return {
+    stairs: edge.stairs,
+    pedestrianEvidence: edge.pedestrianEvidence,
+    roadCenterline: edge.roadCenterline,
+    requiresCurbRamp: edge.requiresCurbRamp,
+    curbEvidence: edge.curbEvidence,
+    requiresElevator: edge.requiresElevator,
+    elevator: edge.elevator,
+    blocked: edge.blocked,
     surface: edge.surface || "unknown",
     slope: Number.isFinite(edge.slope) ? edge.slope : null,
     wheelchair: edge.wheelchairStatus || "unknown",
+    nodeRestrictions: edge.nodeRestrictions,
     curbRamp: edge.curbRamp == null ? null : edge.curbRamp === true,
     lighting: edge.lit === true ? "lit" : edge.lit === false ? "unlit" : "unknown"
   };
@@ -433,15 +490,18 @@ function finiteNonNegative(value) {
 }
 
 function validTimestamp(value) {
-  return value && Number.isFinite(Date.parse(value)) ? String(value) : undefined;
+  const ms = instant(value);
+  return ms == null ? null : new Date(ms).toISOString();
 }
 
 function validFreshness(value) {
   return ["current", "stale", "unknown"].includes(value) ? value : "unknown";
 }
 
-function completeCurrentAccessiblePath(path) {
+function completeCurrentAccessiblePath(path, now = Date.now()) {
   return path?.complete === true
+    && now - Date.parse(path.updatedAt) <= 300_000
+    && Date.parse(path.updatedAt) <= now + 60_000
     && path?.status === "working"
     && path?.freshness === "current"
     && Boolean(path.entranceId)
@@ -498,14 +558,14 @@ function normalizeEndpointConnections(value) {
     const connectorStatus = ["verified", "estimated", "too_far", "unavailable"].includes(item?.connectorStatus)
       ? item.connectorStatus
       : "unavailable";
-    return [key, {
+    return /** @type {const} */ ([key, {
       selectedCoordinates,
       accessPointCoordinates,
       connectorGeometry,
       connectorDistanceMeters: nonNegative(item?.connectorDistanceMeters),
       connectorSource: item?.connectorSource == null ? null : String(item.connectorSource),
       connectorStatus
-    }];
+    }]);
   }).filter(([, item]) => item.selectedCoordinates || item.accessPointCoordinates));
 }
 
@@ -513,8 +573,8 @@ function applyScheduledTimeline(legs, departureTime) {
   let cursor = Date.parse(departureTime);
   if (!Number.isFinite(cursor)) return legs;
   return legs.map(leg => {
-    const departure = cursor + nonNegative(leg.waitSeconds) * 1000;
-    const arrival = departure + nonNegative(leg.durationSeconds) * 1000;
+    const departure = instant(leg.departureTime) ?? cursor + nonNegative(leg.waitSeconds) * 1000;
+    const arrival = instant(leg.arrivalTime) ?? departure + nonNegative(leg.durationSeconds) * 1000;
     cursor = arrival;
     return {
       ...leg,
@@ -564,7 +624,7 @@ function orientedLineGeometry(value, reverse) {
 }
 
 function defaultLabel(mode) {
-  return ({ walk: "Accessible walking route", bus: "Accessible bus route", subway: "Accessible subway route", ferry: "Accessible ferry route", mixed: "Accessible mixed transit" })[mode] || "Accessible route";
+  return ({ walk: "Walking route", bus: "Bus route", subway: "Subway route", ferry: "Ferry route", rail: "Rail route", mixed: "Transit route" })[mode] || "Route";
 }
 
 function safeDataSource(value) {
@@ -572,4 +632,58 @@ function safeDataSource(value) {
     .replace(/https?:\/\/\S+/gi, "provider endpoint")
     .replace(/\bVITE_[A-Z0-9_]+\b/g, "configured provider")
     .slice(0, 120);
+}
+
+/** Convert the route contract back to the shared requirements boundary. */
+export function legToEdge(leg) {
+  return { ...leg.accessibility, id: leg.edgeId || leg.id, from: leg.from.id, to: leg.to.id,
+    distanceMeters: leg.distanceMeters, minutes: leg.durationSeconds / 60,
+    wheelchairStatus: leg.accessibility?.wheelchairStatus || leg.accessibility?.wheelchair,
+    geometry: leg.geometry?.coordinates };
+}
+
+function vehicleRequirements(legs, index, needs, now = Date.now()) {
+  /** @type {Record<string, import('./accessibility.js').Evidence>} */
+  const result = {};
+  const leg = legs[index];
+  if (!VEHICLE_MODES.has(leg.mode)) return result;
+  const boards = !continuesRide(legs[index - 1], leg);
+  const exits = !continuesRide(leg, legs[index + 1]);
+  const a = leg.accessibility || {};
+  const check = (value, reason) => evidence(value === true ? "satisfied" : value === false ? "violated" : "unknown", reason);
+  if (needs.wheelchairMode) {
+    result.vehicle = check(a.vehicleWheelchairAccessible ?? a.wheelchairAccessible, "Wheelchair accessibility of the vehicle.");
+    if (boards) result.boarding = check(a.boardingAccessible ?? a.wheelchairAccessible, "Wheelchair boarding at the stop.");
+    if (exits) result.exit = check(a.exitAccessible ?? a.wheelchairAccessible, "Wheelchair alighting at the stop.");
+  }
+  if (leg.mode === "bus" && (needs.requireCurb || needs.wheelchairMode || needs.requireVerifiedCurbAccess)) {
+    if (boards) result.boardingCurb = check(a.boardingCurb, "Lowered-curb evidence at the boarding stop.");
+    if (exits) result.exitCurb = check(a.exitCurb, "Lowered-curb evidence at the exit stop.");
+  }
+  if (["subway", "rail"].includes(leg.mode) && (needs.requireElevator || needs.wheelchairMode || needs.avoidStairs)) {
+    const stationPath = (path, reason) => {
+      const observed = instant(path?.updatedAt);
+      const out = path?.status === "out" && path.freshness === "current" && observed != null && now - observed >= 0 && now - observed <= 300_000;
+      return check(out ? false : completeCurrentAccessiblePath(path, now) ? true : null, reason);
+    };
+    if (boards) result.stationEntry = stationPath(a.boardingPath, "Current accessible entrance-to-platform path.");
+    if (exits) result.stationExit = stationPath(a.exitPath, "Current accessible platform-to-exit path.");
+  }
+  return result;
+}
+
+function routeEvidence(legs, needs, now) {
+  const summary = summarizeEvidence(legs.filter(leg => ["walk", "transfer"].includes(leg.mode)).map(legToEdge), needs);
+  let unknownEvents = 0;
+  for (const [index, leg] of legs.entries()) {
+    const requirements = vehicleRequirements(legs, index, needs, now);
+    const violations = Object.entries(requirements).filter(([, value]) => value.state === "violated");
+    const unknowns = Object.entries(requirements).filter(([, value]) => value.state === "unknown");
+    if (!violations.length && !unknowns.length) continue;
+    unknownEvents += unknowns.length;
+    summary.segments.push({ edgeId: leg.id, distanceMeters: 0, requirements, violations, unknowns, status: violations.length ? "violated" : "unknown", eligible: !violations.length && (needs.unknownPolicy === "allow" || !unknowns.length) });
+    if (violations.length) summary.status = "violated";
+    else if (summary.status !== "violated") summary.status = "unknown";
+  }
+  return { ...summary, unknownEvents };
 }

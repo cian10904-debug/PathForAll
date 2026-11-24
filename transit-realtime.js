@@ -5,7 +5,7 @@ import { fetchWithPolicy } from "./fetch-client.js";
 import { transitEnvironment } from "./transit-connections.js";
 
 const BACKEND_URL = transitEnvironment.endpoints.realtimeArrivals.url;
-const VEHICLE_MODES = new Set(["bus", "subway", "ferry"]);
+import { continuesRide, VEHICLE_MODES } from "./transit-modes.js";
 
 export function hasTransitArrivalService(url = BACKEND_URL) {
   return Boolean(url);
@@ -14,15 +14,16 @@ export function hasTransitArrivalService(url = BACKEND_URL) {
 export function boardingGroups(route) {
   const groups = [];
   let active = null;
+  let previous = null;
   for (const [legIndex, leg] of (route?.legs || []).entries()) {
     if (!VEHICLE_MODES.has(leg.mode)) {
       active = null;
+      previous = null;
       continue;
     }
-    const key = vehicleKey(leg);
-    if (!active || active.key !== key) {
+    if (!active || !continuesRide(previous, leg)) {
       active = {
-        key,
+        key: leg.tripId || leg.id,
         legIndex,
         legIndexes: [],
         stopId: leg.from.id,
@@ -35,6 +36,7 @@ export function boardingGroups(route) {
       groups.push(active);
     }
     active.legIndexes.push(legIndex);
+    previous = leg;
   }
   return groups;
 }
@@ -129,16 +131,19 @@ export function attachArrivalData(route, arrivals) {
   const arrivalByLeg = new Map((arrivals?.boardings || []).map(boarding => [boarding.legIndex, boarding]));
   const legs = route.legs.map(leg => ({ ...leg }));
   const normalizedBoardings = [];
+  const hasPlanTimeline = route.timelineRequired === true;
   for (const group of groups) {
     const result = arrivalByLeg.get(group.legIndex);
     const firstLeg = legs[group.legIndex];
-    const scheduledWait = Number(firstLeg.scheduledWaitSeconds ?? (firstLeg.waitSource === "scheduled" ? firstLeg.waitSeconds : 0));
-    const selectedWait = result?.status === "available"
-      ? Number(result.selectedPrediction?.waitSeconds)
-      : Number.isFinite(scheduledWait) ? scheduledWait : 0;
-    firstLeg.waitSeconds = Number.isFinite(selectedWait) && selectedWait >= 0 ? selectedWait : 0;
-    firstLeg.waitSource = result?.status === "available" ? result.selectedPrediction?.kind || "realtime" : scheduledWait > 0 ? "scheduled" : "unavailable";
-    for (const legIndex of group.legIndexes.slice(1)) legs[legIndex].waitSeconds = 0;
+    if (!hasPlanTimeline) {
+      const scheduledWait = Number(firstLeg.scheduledWaitSeconds ?? (firstLeg.waitSource === "scheduled" ? firstLeg.waitSeconds : 0));
+      const selectedWait = result?.status === "available"
+        ? Number(result.selectedPrediction?.waitSeconds)
+        : Number.isFinite(scheduledWait) ? scheduledWait : 0;
+      firstLeg.waitSeconds = Number.isFinite(selectedWait) && selectedWait >= 0 ? selectedWait : 0;
+      firstLeg.waitSource = result?.status === "available" ? result.selectedPrediction?.kind || "realtime" : scheduledWait > 0 ? "scheduled" : "unavailable";
+      for (const legIndex of group.legIndexes.slice(1)) legs[legIndex].waitSeconds = 0;
+    }
     normalizedBoardings.push({
       legIndex: group.legIndex,
       stopId: group.stopId,
@@ -154,7 +159,7 @@ export function attachArrivalData(route, arrivals) {
       status: result?.status || "unavailable"
     });
   }
-  const retimedLegs = retimeLegs(legs, route, groups);
+  const retimedLegs = hasPlanTimeline ? route.legs : retimeLegs(legs, route, groups);
   const totals = calculateRouteTotals(retimedLegs);
   return {
     ...route,
@@ -175,7 +180,7 @@ export function rankRoutesAfterArrivals(routes, needs = {}, selectedRouteId = nu
   return {
     routes: ranked.map((route, index) => ({
       ...route,
-      label: index === 0 ? "Recommended" : route.label === "Recommended" ? "Accessible alternative" : route.label
+      label: index === 0 ? "Recommended" : route.label === "Recommended" ? "Alternative" : route.label
     })),
     selectedIndex: selectedRouteId
       ? Math.max(0, ranked.findIndex(route => route.id === selectedRouteId))
@@ -184,11 +189,11 @@ export function rankRoutesAfterArrivals(routes, needs = {}, selectedRouteId = nu
 }
 
 function finalRouteScore(route, needs) {
-  const criticalUnknowns = Number(route?.trust?.criticalUnknowns ?? route?.trust?.unknownSegments ?? 0);
+  const unknownMeters = Number(route?.evidence?.unknownDistanceMeters ?? route?.trust?.unknownDistance ?? 0);
   const barrierSegments = Number(route?.trust?.barrierSegments || 0);
-  const trustPenalty = criticalUnknowns * 240 + barrierSegments * 10_000;
+  const trustPenalty = unknownMeters * .5 + (barrierSegments > 0 ? Infinity : 0);
   const transferPenalty = Number(route?.transfers || 0) * (needs.minimizeTransfers ? 420 : 180);
-  return Number(route?.totalDurationSeconds || 0) + transferPenalty + trustPenalty;
+  return (route.mode === "walk" && Number.isFinite(route.generalizedCostMinutes) ? route.generalizedCostMinutes * 60 : Number(route?.totalDurationSeconds || 0)) + transferPenalty + trustPenalty;
 }
 
 export function unavailableArrival(leg, message = "Arrival information unavailable") {
@@ -252,9 +257,7 @@ function unavailableBoarding(group, status = "unavailable", data = {}, updatedAt
   };
 }
 
-function vehicleKey(leg) {
-  return `${leg.mode}:${leg.routeId || leg.routeName || leg.operator || leg.id}:${leg.tripId || leg.directionId || leg.headsign || ""}`;
-}
+
 
 function alignBoardingPredictions(route, boardings, now) {
   const current = now instanceof Date ? now : new Date(now);

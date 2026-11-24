@@ -3,14 +3,14 @@
 import { appStorage } from "./storage-adapter.js";
 
 const PROFILE_KEY = "pathforall-profile-v7";
-const PROFILE_SCHEMA_VERSION = 3;
+const PROFILE_SCHEMA_VERSION = 4;
 
 export const MOBILITY_PRESETS = Object.freeze({
   wheelchair: Object.freeze({
+    unknownPolicy: "strict",
     wheelchairMode: true,
     avoidStairs: true,
     requireCurb: true,
-    curbPolicy: "preferred",
     curbPolicy: "required",
     requireVerifiedCurbAccess: false,
     preferSmooth: true,
@@ -23,6 +23,7 @@ export const MOBILITY_PRESETS = Object.freeze({
     maxWalkMinutes: 12
   }),
   limited: Object.freeze({
+    unknownPolicy: "strict",
     wheelchairMode: false,
     avoidStairs: true,
     requireCurb: false,
@@ -38,6 +39,7 @@ export const MOBILITY_PRESETS = Object.freeze({
     maxWalkMinutes: 10
   }),
   senior: Object.freeze({
+    unknownPolicy: "strict",
     wheelchairMode: false,
     avoidStairs: true,
     requireCurb: false,
@@ -53,6 +55,7 @@ export const MOBILITY_PRESETS = Object.freeze({
     maxWalkMinutes: 12
   }),
   custom: Object.freeze({
+    unknownPolicy: "strict",
     wheelchairMode: false,
     avoidStairs: false,
     requireCurb: false,
@@ -64,7 +67,7 @@ export const MOBILITY_PRESETS = Object.freeze({
     preferWellLit: false,
     avoidRain: false,
     minimizeTransfers: false,
-    maxSlope: 10,
+    maxSlope: null,
     maxWalkMinutes: 15
   })
 });
@@ -75,21 +78,8 @@ export const DEFAULT_PROFILE = Object.freeze({
   email: "",
   avatar: "",
   needs: {
-    mobilityProfile: "wheelchair",
-    wheelchairMode: true,
-    avoidStairs: true,
-    requireCurb: true,
-    curbPolicy: "preferred",
-    curbPolicy: "required",
-    requireVerifiedCurbAccess: false,
-    preferSmooth: true,
-    requireElevator: true,
-    preferShade: false,
-    preferWellLit: false,
-    avoidRain: false,
-    minimizeTransfers: true,
-    maxSlope: 6,
-    maxWalkMinutes: 12,
+    mobilityProfile: "custom",
+    ...MOBILITY_PRESETS.custom,
     customNeeds: []
   }
 });
@@ -123,7 +113,7 @@ export function normalizeProfile(value) {
   const needs = source.needs && typeof source.needs === "object" ? source.needs : {};
   const mobilityProfile = ["wheelchair", "limited", "senior", "custom"].includes(needs.mobilityProfile)
     ? needs.mobilityProfile
-    : (needs.wheelchairMode === false ? "custom" : "wheelchair");
+    : (needs.wheelchairMode === true ? "wheelchair" : "custom");
   const preset = MOBILITY_PRESETS[mobilityProfile];
   return {
     signedIn: Boolean(source.signedIn),
@@ -132,7 +122,8 @@ export function normalizeProfile(value) {
     avatar: typeof source.avatar === "string" ? source.avatar : "",
     needs: {
       mobilityProfile,
-      wheelchairMode: mobilityProfile === "custom" ? Boolean(needs.wheelchairMode) : preset.wheelchairMode,
+      unknownPolicy: needs.unknownPolicy === "allow" ? "allow" : "strict",
+    wheelchairMode: mobilityProfile === "custom" ? Boolean(needs.wheelchairMode) : preset.wheelchairMode,
       avoidStairs: booleanOr(needs.avoidStairs, preset.avoidStairs),
       requireCurb: booleanOr(needs.requireCurb, preset.requireCurb),
       curbPolicy: validCurbPolicy(needs.curbPolicy, preset.curbPolicy),
@@ -143,7 +134,7 @@ export function normalizeProfile(value) {
       preferWellLit: booleanOr(needs.preferWellLit, preset.preferWellLit),
       avoidRain: booleanOr(needs.avoidRain, preset.avoidRain),
       minimizeTransfers: booleanOr(needs.minimizeTransfers, preset.minimizeTransfers),
-      maxSlope: clampNumber(needs.maxSlope, 2, 12, preset.maxSlope),
+      maxSlope: needs.maxSlope === null ? null : clampNumber(needs.maxSlope, 2, 12, preset.maxSlope),
       maxWalkMinutes: clampNumber(needs.maxWalkMinutes, 4, 25, preset.maxWalkMinutes),
       customNeeds: Array.isArray(needs.customNeeds)
         ? needs.customNeeds.map(item => cleanText(item, 80)).filter(Boolean).slice(0, 12)
@@ -177,7 +168,8 @@ export function profileNeedsToLabels(needs) {
   if (needs.preferWellLit) labels.push("Better-lit routes");
   if (needs.avoidRain) labels.push("Rain cover");
   if (needs.minimizeTransfers) labels.push("Fewer transfers");
-  labels.push(`Slope ≤ ${needs.maxSlope}%`);
+  if (Number.isFinite(needs.maxSlope)) labels.push(`Slope ≤ ${needs.maxSlope}%`);
+  labels.push(needs.unknownPolicy === "allow" ? "Unknown conditions allowed" : "Strict evidence");
   return labels;
 }
 

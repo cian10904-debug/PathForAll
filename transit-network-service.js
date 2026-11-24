@@ -20,13 +20,13 @@ export function hasTransitNetworkService(url = TRANSIT_NETWORK_URL) {
  * complete NYC transit graph to the browser.
  */
 export async function loadTransitNetwork({
-  signal,
+  signal = undefined,
   url = TRANSIT_NETWORK_URL,
   fetchImpl = globalThis.fetch,
-  start,
-  end,
-  mode,
-  maxWalkMinutes,
+  start = null,
+  end = null,
+  mode = null,
+  maxWalkMinutes = null,
   departureTime = new Date(),
   now = new Date()
 } = {}) {
@@ -69,7 +69,7 @@ export async function loadTransitNetwork({
   return normalized;
 }
 
-export function transitNetworkRequestUrl(url, { start, end, mode, maxWalkMinutes, departureTime } = {}) {
+export function transitNetworkRequestUrl(url, { start = null, end = null, mode = null, maxWalkMinutes = null, departureTime = new Date() } = {}) {
   const endpoint = new URL(url, "https://pathforall.local");
   if (coordinate(start)) endpoint.searchParams.set("start", coordinate(start).join(","));
   if (coordinate(end)) endpoint.searchParams.set("end", coordinate(end).join(","));

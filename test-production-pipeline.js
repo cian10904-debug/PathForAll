@@ -12,7 +12,7 @@ import {
   prepareTransitStops
 } from "./transit-routing.js";
 
-const CURRENT = "2099-01-01T12:00:00.000Z";
+const CURRENT = new Date().toISOString();
 const EXPIRES = "2099-01-01T13:00:00.000Z";
 
 let walkOnlyCalls = 0;
@@ -72,9 +72,9 @@ const preparedStops = prepareTransitStops(nodes, network.stops);
 const unknownCurb = preparedStops.find(stop => stop.providerId === "unknown");
 assert.equal(unknownCurb.curbAccess, "unknown");
 assert.equal(
-  isBoardingStopUsable(unknownCurb, { wheelchairMode: true, requireCurb: true }, "bus"),
+  isBoardingStopUsable(unknownCurb, { wheelchairMode: true, requireCurb: true, unknownPolicy: "allow" }, "bus"),
   true,
-  "unknown curb evidence is allowed with an uncertainty warning under ordinary wheelchair routing."
+  "unknown curb evidence is allowed with an uncertainty warning only under explicitly selected unknown-data mode."
 );
 assert.equal(
   isBoardingStopUsable(unknownCurb, { wheelchairMode: true, requireCurb: true, requireVerifiedCurbAccess: true }, "bus"),
@@ -312,6 +312,8 @@ function walkingEdge(id, from, to, graph, distanceMeters) {
     wheelchairStatus: "yes",
     curbRamp: true,
     surface: "smooth",
+    stairs: false,
+    requiresCurbRamp: false,
     confidence: .9,
     bidirectional: true
   };
