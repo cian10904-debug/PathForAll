@@ -2,6 +2,7 @@ import { test, expect } from "@playwright/test";
 import { createServer as createVite } from "vite";
 import { createAppServer } from "../../server/index.js";
 import { createOtpProvider } from "../../server/otp-provider.js";
+import { PLAN_QUERY } from "../../server/otp-query.js";
 import { CLOCK, start, end, exampleItinerary, manifest, mockOtp } from "../fixtures/otp.js";
 
 test.use({ timezoneId: "Pacific/Honolulu", viewport: { width: 390, height: 844 } });
@@ -12,8 +13,12 @@ test("All Transit uses New York time, shows the actual bus itinerary, saves it a
   page.on("console", (message) => {
     if (message.text().includes("Worker failed to load")) workerErrors.push(message.text());
   });
+  let routesUnavailable = true;
+  const fixture = mockOtp([exampleItinerary()]);
   const provider = createOtpProvider({ url: "https://otp.example.test/otp/gtfs/v1", manifest,
-    clock: () => CLOCK, fetchImpl: mockOtp([exampleItinerary()]) });
+    clock: () => CLOCK, fetchImpl: async (url, request) =>
+      routesUnavailable && JSON.parse(request.body).query === PLAN_QUERY
+        ? new Response(null, { status: 503 }) : fixture(url, request) });
   const server = createAppServer({ primary: provider, clock: () => CLOCK });
   await new Promise(resolve => server.listen(0,"127.0.0.1",resolve));
   let vite;
@@ -54,6 +59,10 @@ test("All Transit uses New York time, shows the actual bus itinerary, saves it a
     }
     await page.getByText("Leave now by default").click();
     await page.locator("#departureTime").fill("2026-11-24T10:00");
+    await page.getByRole("button",{name:"Find routes",exact:true}).click();
+    await expect(page.locator("#routeCards")).toContainText("Transit planning is temporarily unavailable");
+    await page.locator("#closeResultsButton").click();
+    routesUnavailable = false;
     const received = page.waitForResponse(response => response.url().endsWith("/api/routes") && response.request().method() === "POST");
     await page.getByRole("button",{name:"Find routes",exact:true}).click();
     const response = await received;

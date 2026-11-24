@@ -561,7 +561,7 @@ function initializeMap() {
   state.map.on("click", handleMapPointClick);
   state.map.on("load", () => {
     state.mapLoaded = true;
-    setMapMessage("Map ready · choose two places to load accessible street data", "success");
+    setMapMessage("Map ready · choose a start and destination", "success");
     addRouteLayers();
     updateEndpointMarker("start");
     updateEndpointMarker("end");
@@ -805,19 +805,20 @@ async function calculateRoutes(options = {}) {
       setNavigationMessage("Rerouting failed because no verified replacement was available. The previous route remains visible.");
       return false;
     }
-    els.routeCards.innerHTML = '<div class="empty-card"><strong>Route unavailable</strong><span>We could not find a verified street-aligned route for these locations. Your selected places are still on the map.</span></div>';
+    const providerMessage = error instanceof TransitProviderError
+      ? TRANSIT_ERROR_MESSAGES[error.code] || "Transit information is unavailable for this route."
+      : null;
+    const message = error instanceof RouteAvailabilityError
+      ? error.message
+      : providerMessage || "Route calculation is unavailable right now. Your selected places are still on the map.";
+    els.routeCards.innerHTML = `<div class="empty-card"><strong>Route unavailable</strong><span>${escapeHtml(message)}</span></div>`;
     els.resultsTitle.textContent = "Route unavailable";
     if (!calculationOptions.navigationReroute) {
       openResultsPanel();
       requestMapResize();
     }
     clearSelectedRoute();
-    const providerMessage = error instanceof TransitProviderError
-      ? TRANSIT_ERROR_MESSAGES[error.code] || "Transit information is unavailable for this route."
-      : null;
-    setPlannerMessage(error instanceof RouteAvailabilityError
-      ? error.message
-      : providerMessage || "Route calculation is unavailable right now. Your selected places are still on the map.", "warning");
+    setPlannerMessage(message, "warning");
     return false;
   } finally {
     request.finish();

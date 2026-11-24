@@ -26,6 +26,7 @@ const queens = [-73.90292, 40.74544],
   woodside = [-73.90248, 40.74594];
 const yorkville = [-73.9477, 40.77779],
   lowerEast = [-73.98525, 40.71895];
+/** @type {{id: string, mode: string, start: number[], end: number[], requires?: string, needs?: import('../domain.d.ts').Needs, expected?: string, expectsRoute?: boolean}[]} */
 const examples = [
   {
     id: "M8-street-to-street",
@@ -75,6 +76,7 @@ const examples = [
     start: [-74.00981, 40.70337],
     end: [-73.99502, 40.70224],
     requires: "ferry",
+    expectsRoute: process.env.PFA_EVAL_REQUIRE_FERRY === "1",
   },
   {
     id: "strict-wheelchair",
@@ -98,6 +100,23 @@ const examples = [
     expected: "OUTSIDE_TRANSIT_COVERAGE",
   },
 ];
+if (process.env.PFA_EVAL_EXTENDED_NYC === "1")
+  examples.push(
+    {
+      id: "Bronx-Grand-Concourse",
+      mode: "bus",
+      start: [-73.922795, 40.826453],
+      end: [-73.897531, 40.86223],
+      expectsRoute: true,
+    },
+    {
+      id: "Staten-Island-Victory-Richmond",
+      mode: "bus",
+      start: [-74.076746, 40.637834],
+      end: [-74.117264, 40.640799],
+      expectsRoute: true,
+    },
+  );
 
 const results = [];
 for (const item of examples) {
@@ -193,6 +212,13 @@ for (const { id, status, elapsedMs, code, routes } of results)
       "-",
   );
 if (
+  examples.some(
+    (example) =>
+      example.expectsRoute &&
+      !results.some(
+        (result) => result.id === example.id && result.status === "returned",
+      ),
+  ) ||
   results.some(
     (result) =>
       result.routes?.some((route) => !route.validation.valid) ||
